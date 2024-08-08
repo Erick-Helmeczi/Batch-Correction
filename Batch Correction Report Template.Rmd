@@ -1,0 +1,91 @@
+---
+title: "Batch Correction Report Template"
+author: "Erick Helmeczi"
+date: "2024-08-08"
+output: html_document
+runtime: shiny
+---
+
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(echo = FALSE)
+```
+
+This R Markdown document is made interactive using Shiny. Unlike the more traditional workflow of creating static reports, you can now create documents that allow your readers to change the assumptions underlying your analysis and see the results immediately. 
+
+To learn more, see [Interactive Documents](http://rmarkdown.rstudio.com/authoring_shiny.html).
+
+
+```{r, include = FALSE}
+library("tidyverse")
+library("rmarkdown")
+```
+
+## Data Summary
+
+```{r}
+
+# read and prepare data
+
+data <- read.csv("example_data.csv")
+data$batch <- as.factor(data$batch)
+```
+
+```{r qc, echo=FALSE}
+inputPanel(
+  
+  varSelectInput(
+  inputId = "metabolite",
+  label = "Metabolite Selection:",
+  data = data[, 5:ncol(data)],
+  selected = NULL,
+  multiple = FALSE,
+  selectize = TRUE,
+  width = NULL,
+  size = NULL
+),
+
+selectInput(inputId = "class_filter", 
+            label = "Class Selection:", 
+            choices = c("Both", unique(data$class)), 
+            selected = "QC"),
+
+sliderInput(inputId = "point_size", 
+            label = "Point Size:",
+            min = 1, 
+            max = 10,
+            value = 5)
+
+)
+
+# filter data based on class based on user selection
+
+filtered_data <- reactive({
+  if (input$class_filter != "Both") {
+    subset(data, class == input$class_filter)
+  } else {
+    data
+  }
+})
+
+# compute mean and confidence intervals based on user metabolite and class selection
+
+# computer statistical summary
+
+
+
+# plot control chart
+
+renderPlot({
+  plot_data <- filtered_data()
+  ggplot(data = plot_data, aes(x = run_order, y = .data[[input$metabolite]], color = batch)) +
+    geom_point(size = input$point_size) +
+    theme_classic() +
+    theme(text = element_text(size = 25),
+          axis.text = element_text(color="black"),
+          axis.ticks = element_line(color = "black")) +
+    scale_x_continuous(breaks = scales::breaks_pretty(), name = "Run Order") +
+    scale_y_continuous(breaks = scales::breaks_pretty(), name = "Response") +
+    labs(color = "Batch") +
+    ggtitle(paste(input$metabolite, "Control Chart", sep = " "))
+})
+```
