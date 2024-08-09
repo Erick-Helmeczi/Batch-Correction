@@ -1,5 +1,5 @@
 ---
-title: "Batch Correction Report Template"
+title: "Batch Correction Reporting Template"
 author: "Erick Helmeczi"
 date: "2024-08-08"
 output: html_document
@@ -10,25 +10,232 @@ runtime: shiny
 knitr::opts_chunk$set(echo = FALSE)
 ```
 
-This R Markdown document is made interactive using Shiny. Unlike the more traditional workflow of creating static reports, you can now create documents that allow your readers to change the assumptions underlying your analysis and see the results immediately. 
+This R Markdown document provides the following summaries and features:
 
-To learn more, see [Interactive Documents](http://rmarkdown.rstudio.com/authoring_shiny.html).
+  1. A brief overview of the distribution of sample and pooled quality control data. Normalization tools are provided to prepare data for future statistical analyses. Control chart for individual metabolites based on run order to identify batch effects and signal drift.
+  2. Several batch correction algorithms are provided along with cross validation results.
+  3. An export function is available for the final transformed and batch corrected data set.
 
 
 ```{r, include = FALSE}
+# Load packages
+
 library("tidyverse")
+library("stats")
 library("rmarkdown")
+library("factoextra")
 ```
 
-## Data Summary
+```{r}
+# Read and prepare data
+
+data <- read.csv("study matrix.csv")
+data$class <- as.factor(data$class)
+data$batch <- as.factor(data$batch)
+
+```
+
+<div align="center">
+
+## Data Summary Before Batch Correction
+
+<div align="left">
+
+### Data Distribution
+
+This section explores the distribution of the raw data. Data transformers are available below which will be applied throughout the entire report if selected. If zeros are detected in the data some transformers will not be available. 
+
+```{r}
+inputPanel(
+  
+  selectInput(
+  inputId = "transformer",
+  label = "Data Transformer",
+  choices = c("None", "Log10", "ln", "Cube Root"),
+  selected = "None",
+  multiple = FALSE,
+  selectize = TRUE,
+  width = NULL,
+  size = NULL)
+  
+)
+
+transformed_data <- reactive({
+  
+  data_transformed <- data
+  
+  if (input$transformer == "Log10") {
+    data_transformed[, 5:ncol(data)] <- log(data[, 5:ncol(data)], base = 10)
+  } else if (input$transformer == "ln") {
+    data_transformed[, 5:ncol(data)] <- log(data[, 5:ncol(data)])
+  } else if (input$transformer == "Cube Root") {
+    data_transformed[, 5:ncol(data)] <- (data[, 5:ncol(data)])^(1/3)
+  }
+  
+  return(data_transformed)
+  
+})
+
+```
+
+
+#### Table Summary
+
+The table below summarizes key statistics for each metabolite. The columns "Mean" and "Standard_Deviation" were calculated with sample data only. Biological and technical precision have units of percent. The intraclass correlation coefficient (ICC) was calculated with the following equation:
+
+$$
+\Large ICC = \frac{\sigma^2_{\text{Biological}}} {\sigma^2_{\text{Biological}} + \sigma^2_{\text{Technical}}}
+$$
+
 
 ```{r}
 
-# read and prepare data
+renderDataTable({
+  
+  data <- transformed_data()
 
-data <- read.csv("example_data.csv")
-data$batch <- as.factor(data$batch)
+sample_df <- data[which(data$class == "Sample"), 5:ncol(data)]
+qc_df <- data[which(data$class == "QC"), 5:ncol(data)]
+
+table_summary <- data.frame("Metabolite" = colnames(sample_df),
+                            "Mean" = colMeans(sample_df),
+                            "Standard_Deviation" = apply(sample_df, 2, sd),
+                            "Biological_CV" = apply(sample_df, 2, sd) / colMeans(sample_df) * 100,
+                            "Technical_CV" = apply(qc_df, 2, sd) / colMeans(qc_df) * 100,
+                            "ICC" = (apply(sample_df, 2, sd))^2 / ((apply(sample_df, 2, sd))^2 + (apply(qc_df, 2, sd))^2))
+
+table_summary[,2:ncol(table_summary)] <- round(table_summary[,2:ncol(table_summary)], digits = 2)
+  
+  table_summary
+  
+})
+
+
 ```
+
+
+```{r}
+inputPanel(
+  
+  varSelectInput(
+  inputId = "metabolite",
+  label = "Metabolite Selection:",
+  data = data[, 5:ncol(data)],
+  selected = NULL,
+  multiple = FALSE,
+  selectize = TRUE,
+  width = NULL,
+  size = NULL
+),
+
+selectInput(
+  inputId = "class_filter", 
+  label = "Class Selection:", 
+  choices = c("Both", "QC", "Sample"), 
+  selected = "Sample"),
+
+numericInput(inputId = "bins",
+  label = "Number of Bins:",
+  value = 15,
+  min = 0,
+  max = NA,
+  step = 1,
+  width = NULL)
+
+)
+
+# filter data based on class based on user selection
+
+filtered_data <- reactive({
+  
+  df <- transformed_data()
+  
+  if (input$class_filter != "Both") {
+    subset(df, class == input$class_filter)
+  } else {
+    df
+  }
+  
+})
+
+# plot histogram
+
+renderPlot({
+  
+  plot_data <- filtered_data()
+  
+  ggplot(data = plot_data, aes(x = .data[[input$metabolite]])) +
+    geom_histogram(bins = input$bins, fill = "#F8766D", color = "white", alpha = 0.7) +
+    theme_classic() +
+    theme(text = element_text(size = 25),
+          axis.text = element_text(color="black"),
+          axis.ticks = element_line(color = "black")) +
+    scale_x_continuous(breaks = scales::breaks_pretty(), name = paste(input$metabolite, "Response", sep = " ")) +
+    scale_y_continuous(breaks = scales::breaks_pretty(), name = "Count") +
+    ggtitle(paste(input$metabolite, "Histogram", sep = " "))
+})
+
+```
+
+### PCA Comparing Technical and Biological Variation of Uncorrected Data
+
+```{r}
+
+inputPanel(
+  
+  checkboxInput(inputId = "autoscale", 
+                label = "Autoscale Data", 
+                value = TRUE, 
+                width = NULL),
+  
+)
+
+# convert class to numeric for prcomp function
+
+pca_data <- data
+pca_data$class <- ifelse(pca_data$class == "Sample", 1, 0)
+
+renderPlot({
+  
+ pca_results <- prcomp(pca_data[, c(2,5:ncol(pca_data))], 
+                center = input$autoscale,
+                scale = input$autoscale)
+ 
+ scree.plot <- fviz_eig(pca_results)
+
+pc1 <- scree.plot[["data"]][["eig"]][1] %>%
+  round(., 1)
+pc2 <- scree.plot[["data"]][["eig"]][2] %>%
+  round(., 1)
+  
+  fviz_pca_ind(pca_results,
+             col.ind = data$class,
+             palette = c("#FF5733", "#1ABC9C"),
+             addEllipses = TRUE, 
+             legend.title = "Groups",
+             label = "none",
+             repel = FALSE,
+             mean.point = FALSE,
+             pointsize = 3,
+             pointshape = 19,
+             alpha = 0.5) +
+  theme(text = element_text(size = 20, family = "sans"),
+        plot.title = element_blank(),
+        axis.text = element_text(colour="black", face = "plain", size = 20, family = "sans"),
+        axis.line = element_line(linewidth = 0.5, colour = "black", linetype = 1)) +
+  scale_y_continuous(name = paste("PC 2 (", pc2, "%)", sep = ""),
+                     breaks = scales::pretty_breaks(n = 10)) +
+  scale_x_continuous(name = paste("PC 1 (", pc1, "%)", sep = ""),
+                     breaks = scales::pretty_breaks(n = 10)) 
+  
+  
+})
+
+
+```
+
+
+### Metabolite Control Charts
 
 ```{r qc, echo=FALSE}
 inputPanel(
@@ -59,13 +266,6 @@ sliderInput(inputId = "point_size",
 
 # filter data based on class based on user selection
 
-filtered_data <- reactive({
-  if (input$class_filter != "Both") {
-    subset(data, class == input$class_filter)
-  } else {
-    data
-  }
-})
 
 # compute mean and confidence intervals based on user metabolite and class selection
 
@@ -77,6 +277,7 @@ filtered_data <- reactive({
 
 renderPlot({
   plot_data <- filtered_data()
+  
   ggplot(data = plot_data, aes(x = run_order, y = .data[[input$metabolite]], color = batch)) +
     geom_point(size = input$point_size) +
     theme_classic() +
@@ -89,3 +290,10 @@ renderPlot({
     ggtitle(paste(input$metabolite, "Control Chart", sep = " "))
 })
 ```
+
+<div align="center">
+
+## Batch Correction
+
+<div align="left">
+
