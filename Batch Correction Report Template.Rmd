@@ -16,7 +16,8 @@ knitr::opts_chunk$set(echo = FALSE)
 library("tidyverse")
 library("stats")
 library("rmarkdown")
-library("factoextra")
+library("factoextra") # For PCA
+library("pmp") # for QCRSC batch correction
 ```
 
 ```{r}
@@ -413,4 +414,95 @@ renderPlot({
 <div align = "left">
 
 <hr style="border:1px solid black">
+
+```{r}
+
+qcrsc_corrected <- reactive({
+  
+  df <- transformed_data()
+  
+  results_temp <- QCRSC(df = df[, 5:ncol(df)],
+                            order = df$run_order,
+                            batch = df$batch,
+                            classes = df$class,
+                            spar = 0,
+                            log = FALSE,
+                            minQC = 4,
+                            qc_label = "QC")
+  
+  results_temp <- t(results_temp)
+  
+  df[, 5:ncol(df)] <- results_temp
+  
+  return(df)
+  
+})
+
+```
+
+```{r}
+inputPanel(
+  
+  varSelectInput(
+  inputId = "cc_metabolite",
+  label = "Metabolite Selection:",
+  data = data[, 5:ncol(data)],
+  selected = NULL,
+  multiple = FALSE,
+  selectize = TRUE,
+  width = NULL,
+  size = NULL
+),
+
+selectInput(
+  inputId = "cc_class_filter", 
+  label = "Class Selection:", 
+  choices = c("Both", "QC", "Sample"), 
+  selected = "Sample"),
+
+sliderInput(inputId = "point_size", 
+            label = "Point Size:",
+            min = 1, 
+            max = 10,
+            value = 5)
+
+)
+
+# plot control chart
+
+renderPlot({
+  
+  # prepare data
+  
+  plot_data <- qcrsc_corrected()
+  
+  plot_data <- if (input$cc_class_filter != "Both") {
+    subset(plot_data, plot_data$class == input$cc_class_filter)
+  } else {
+    plot_data <- transformed_data()
+  }
+  
+  # Calculate metrics for control chart aesthetics
+  
+  mean_value <- mean(plot_data[[input$cc_metabolite]])
+  upper_limit <- mean(plot_data[[input$cc_metabolite]]) + 1.96 * sd(plot_data[[input$cc_metabolite]])
+  lower_limit <- mean(plot_data[[input$cc_metabolite]]) - 1.96 * sd(plot_data[[input$cc_metabolite]])
+  
+  ggplot(data = plot_data, aes(x = run_order, y = .data[[input$cc_metabolite]], color = batch)) +
+    geom_point(size = input$point_size) +
+    geom_hline(yintercept = mean_value, linetype = "solid", color = "black", size = 0.5) +
+    geom_hline(yintercept = upper_limit, linetype = "dashed", color = "red", size = 0.5) +
+    geom_hline(yintercept = lower_limit, linetype = "dashed", color = "red", size = 0.5) +
+    theme_classic() +
+    theme(text = element_text(size = 25),
+          axis.text = element_text(color="black"),
+          axis.ticks = element_line(color = "black")) +
+    scale_x_continuous(breaks = scales::breaks_pretty(), name = "Run Order") +
+    scale_y_continuous(breaks = scales::breaks_pretty(), name = "Response") +
+    labs(color = "Batch") +
+    ggtitle(paste(input$cc_metabolite, "Control Chart", sep = " "))
+  
+})
+```
+
 
