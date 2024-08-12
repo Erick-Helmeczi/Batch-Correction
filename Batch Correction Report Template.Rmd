@@ -415,6 +415,33 @@ renderPlot({
 
 <hr style="border:1px solid black">
 
+### Batch Correction Algorithm Selection
+
+The following batch correction algorithms are supported for implementation:
+
+1. [Quality Control - Robust Spline Correction (QC-RSC)](https://link.springer.com/article/10.1007/s00216-013-6856-7): This algorithm has a user definable smoothing parameter (0 < p < 1), however, to help avoid overfitting, p can be set to 0. In this case, it will be automatically optimized using leave-one-out cross validation. The QC-RSC algorithm is built upon the [quality control - robust LOESS signal correction (QC-RLSC)](https://www.nature.com/articles/nprot.2011.335) algorithm.
+
+```{r}
+
+inputPanel(
+  
+  selectInput(
+  inputId = "batch_correction", 
+  label = "Batch Correction Algorithm:", 
+  choices = c("QC-RSC"), 
+  selected = "QC-RSC"),
+  
+  sliderInput(inputId = "smoothing_parameter", 
+            label = "Smoothing Paramter (QC-RSC):",
+            min = 0, 
+            max = 1,
+            value = 0)
+  
+)
+
+```
+
+
 ```{r}
 
 qcrsc_corrected <- reactive({
@@ -425,7 +452,7 @@ qcrsc_corrected <- reactive({
                             order = df$run_order,
                             batch = df$batch,
                             classes = df$class,
-                            spar = 0,
+                            spar = input$smoothing_parameter,
                             log = FALSE,
                             minQC = 4,
                             qc_label = "QC")
@@ -505,4 +532,16 @@ renderPlot({
 })
 ```
 
+<hr style="border:1px solid black">
 
+<div align = "center">
+
+## Section 3: Export Results
+
+</div>
+
+<div align = "left">
+
+<hr style="border:1px solid black">
+
+ - Signal normalization such as probabalisitc quotient normalization and total signal. Support in pmp
