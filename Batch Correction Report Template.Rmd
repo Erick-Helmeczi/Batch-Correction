@@ -421,6 +421,8 @@ The following batch correction algorithms are supported for implementation:
 
 1. [Quality Control - Robust Spline Correction (QC-RSC)](https://link.springer.com/article/10.1007/s00216-013-6856-7): This algorithm has a user definable smoothing parameter (0 < p < 1), however, to help avoid overfitting, p can be set to 0. In this case, it will be automatically optimized using leave-one-out cross validation. The QC-RSC algorithm is built upon the [quality control - robust LOESS signal correction (QC-RLSC)](https://www.nature.com/articles/nprot.2011.335) algorithm.
 
+2. Quality Control - Median Normalization (QC-MN): This is a simple correction algorithm which simply normalizes each metabolite response to the median of the nearest (n) QC responses. For instance, if n is set to 3 then metabolite A in sample 1 will be normalized to the median response of metabolite A from QCs 1-3. Median is used to reduce the impact of outliers. A larger n should also reduce the impact of outliers but may include QCs less relective of the local batch effects. More information on this correction algorithm is provided by [Martens et al.](https://www.mdpi.com/2218-1989/13/5/665). 
+
 ```{r}
 
 inputPanel(
@@ -428,14 +430,20 @@ inputPanel(
   selectInput(
   inputId = "batch_correction", 
   label = "Batch Correction Algorithm:", 
-  choices = c("QC-RSC"), 
+  choices = c("QC-RSC", "QC-MN"), 
   selected = "QC-RSC"),
   
   sliderInput(inputId = "smoothing_parameter", 
-            label = "Smoothing Paramter (QC-RSC):",
+            label = "Smoothing Parameter (QC-RSC):",
             min = 0, 
             max = 1,
-            value = 0)
+            value = 0),
+  
+    sliderInput(inputId = "n_qc", 
+            label = "Number of QCs (QC-MN):",
+            min = 1, 
+            max = 10,
+            value = 3)
   
 )
 
@@ -443,6 +451,10 @@ inputPanel(
 
 
 ```{r}
+
+# Correction Algorithms 
+
+## 1. QC-RSC
 
 qcrsc_corrected <- reactive({
   
@@ -461,6 +473,40 @@ qcrsc_corrected <- reactive({
   
   df[, 5:ncol(df)] <- results_temp
   
+  return(df)
+  
+})
+
+## Median Normalization
+
+qcmn_corrected <- reactive({
+  
+  df <- transformed_data()
+  
+  # perform batch-wise
+  
+  for(b in 1:length((unique(df$batch)))){
+    
+    df_temp <- subset(df, df$batch == unique(df$batch)[b])
+    qc_df <- subset(df_temp, df_temp$class == "QC")
+    
+      for (i in 1:nrow(df_temp)){
+    
+    # find nearest QC indexes
+    qc_indexes <- sort(abs(qc_df$run_order - df_temp$run_order[i]))[1:input$n_qc] + df_temp$run_order[i]
+    qc_indexes <- which(qc_df$run_order %in% qc_indexes)
+    
+    # get metabolite medians
+    qc_medians <- apply(qc_df[qc_indexes, 5:ncol(qc_df)], 2, median)
+    
+    # normalize data to medians
+    df[which(df$pbm_id == df_temp$pbm_id[i]), 5:ncol(df)] <- df[which(df$pbm_id == df_temp$pbm_id[i]), 5:ncol(df)]  / qc_medians
+    
+    print(df[which(df$pbm_id == df_temp$pbm_id[i]), 5:ncol(df)])
+    
+  }
+  }
+
   return(df)
   
 })
@@ -501,7 +547,12 @@ renderPlot({
   
   # prepare data
   
-  plot_data <- qcrsc_corrected()
+  plot_data <- if (input$batch_correction == "QC-RSC"){
+    plot_data <- qcrsc_corrected()
+    
+  }else if(input$batch_correction == "QC-MN"){
+    plot_data <- qcmn_corrected()
+  }
   
   plot_data <- if (input$cc_class_filter != "Both") {
     subset(plot_data, plot_data$class == input$cc_class_filter)
