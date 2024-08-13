@@ -1,10 +1,27 @@
 ---
-title: "Batch Correction Reporting Template"
+title: "Tools for Implementing and Inspecting Metabolomic Batch Corrections"
 author: "Erick Helmeczi"
-date: "2024-08-08"
+date: "`r Sys.Date()`"
 output: html_document
 runtime: shiny
 ---
+<hr style="border:1px solid black">
+
+<div align = "center">
+
+## Application Summary
+
+</div>
+
+<div align = "left">
+
+<hr style="border:1px solid black">
+
+This interactive R Markdown document provides features summarized in three sections to help users select and apply batch corrections for metabolomic data. This includes: 
+
+  1. A data summary prior to the application of any batch correction. This includes a table summary highlighting key statistics for each metabolite and a principal component analysis (PCA) to help compare study technical and biological variations. Furthermore, the inclusion of control charts help identify intra- and inter-batch effects.
+  2. Several batch correction algorithms are provided along with comparative figures and statistics to uncorrected results to help users quantify the effectiveness of the batch correction algorithms.
+  3. Lastly, an export function is available for the final batch corrected data set. Additionally, normalization transformers are provided as well as feature filters which can be set based on user criteria. The exported data is saved with a brief summary of the data transformations applied, along with any filters, to ensure traceability and repeatability of the final feature table. 
 
 ```{r setup, include = FALSE}
 knitr::opts_chunk$set(echo = FALSE)
@@ -13,11 +30,12 @@ knitr::opts_chunk$set(echo = FALSE)
 ```{r, include = FALSE}
 # Load packages
 
-library("tidyverse")
-library("stats")
-library("rmarkdown")
-library("factoextra") # For PCA
-library("pmp") # for QCRSC batch correction
+if (!require("pacman", quietly = TRUE)) install.packages("pacman")
+if (!require("BiocManager", quietly = TRUE)) install.packages("BiocManager")
+
+pacman::p_load("tidyverse", "stats", "rmarkdown", "factoextra", "pmp",
+               install = TRUE)
+
 ```
 
 ```{r}
@@ -30,7 +48,7 @@ data$batch <- as.factor(data$batch)
 ```
 
 ```{r}
-# Reactive functions
+# Reactive functions for section 1
 
 ## Perform user selected transformation to all metabolites
 
@@ -39,17 +57,17 @@ transformed_data <- reactive({
   temp_df <- data
   
   if (input$transformer == "Log10") {
-    temp_df[, 5:ncol(data)] <- log(data[, 5:ncol(data)], base = 10)
+    temp_df[, 5:ncol(temp_df)] <- log(temp_df[, 5:ncol(temp_df)], base = 10)
   } else if (input$transformer == "ln") {
-    temp_df[, 5:ncol(data)] <- log(data[, 5:ncol(data)])
+    temp_df[, 5:ncol(temp_df)] <- log(temp_df[, 5:ncol(temp_df)])
   } else if (input$transformer == "Cube Root") {
-    temp_df[, 5:ncol(data)] <- (data[, 5:ncol(data)])^(1/3)
+    temp_df[, 5:ncol(temp_df)] <- (temp_df[, 5:ncol(temp_df)])^(1/3)
   }
   
   return(temp_df)
   
 })
-  
+
 ## Autoscale data
 
 autoscaled_data <- reactive({
@@ -67,19 +85,460 @@ autoscaled_data <- reactive({
 })
 
 ```
-
-
-This R Markdown document provides the following summaries and features:
-
-  1. A brief overview of the distribution of sample and pooled quality control data. Normalization tools are provided to prepare data for future statistical analyses. Control chart for individual metabolites based on run order to identify batch effects and signal drift.
-  2. Several batch correction algorithms are provided along with cross validation results.
-  3. An export function is available for the final transformed and batch corrected data set.
   
 <hr style="border:1px solid black">
 
 <div align = "center">
 
 ## Section 1: Data Summary Before Batch Correction
+
+</div>
+
+<div align = "left">
+
+<hr style="border:1px solid black">
+
+---
+
+### Table Summary
+
+The table below summarizes key statistics for each metabolite. The columns "Mean" and "Standard_Deviation" were calculated with sample data (QC data is omitted). Biological and technical precisions have units of percent. The intraclass correlation coefficient (ICC) was calculated with the following equation:
+
+$$
+\Large ICC = \frac{\sigma^2_{\text{Biological}}} {\sigma^2_{\text{Biological}} + \sigma^2_{\text{Technical}}}
+$$
+
+
+```{r}
+
+# initialize reactive elements
+
+table_summary_values <- reactiveValues(
+  bio_cv_median = NULL,
+  bio_cv_range = NULL,
+  tech_cv_median = NULL,
+  tech_cv_range = NULL
+)
+
+renderDataTable({
+  
+  # prepare data
+  
+  sample_df <- data[which(data$class == "Sample"), 5:ncol(data)]
+  qc_df <- data[which(data$class == "QC"), 5:ncol(data)]
+  
+  # calculate cvs
+  
+  biological_cv <- apply(sample_df, 2, sd) / colMeans(sample_df) * 100
+  technical_cv <- apply(qc_df, 2, sd) / colMeans(qc_df) * 100
+  
+  # calculate reactive outputs for markdown text
+  
+  table_summary_values$bio_cv_median <- round(median(biological_cv), 2)
+  table_summary_values$bio_cv_range <- paste(round(min(biological_cv), 2), "-", round(max(biological_cv), 2), sep = " ")
+  table_summary_values$tech_cv_median <- round(median(technical_cv), 2)
+  table_summary_values$tech_cv_range <- paste(round(min(technical_cv), 2), "-", round(max(technical_cv), 2), sep = " ")
+  
+  # generate table summary
+
+  table_summary <- data.frame("Metabolite" = colnames(sample_df),
+                            "Mean" = colMeans(sample_df),
+                            "Standard_Deviation" = apply(sample_df, 2, sd),
+                            "Biological_CV" = biological_cv,
+                            "Technical_CV" = technical_cv,
+                            "ICC" = (apply(sample_df, 2, sd))^2 / ((apply(sample_df, 2, sd))^2 + (apply(qc_df, 2, sd))^2))
+
+  table_summary[,2:ncol(table_summary)] <- round(table_summary[,2:ncol(table_summary)], digits = 2)
+  
+  return(table_summary)
+  
+})
+
+```
+
+```{r}
+
+renderText({
+  paste("In summary, the median technical CV is ", table_summary_values$tech_cv_median,  "% with a range of ", table_summary_values$tech_cv_range, "%. The median biological CV is ",table_summary_values$bio_cv_median,  "% with a range of ", table_summary_values$bio_cv_range, "%", sep = "")
+})
+
+```
+
+---
+
+### Principal Component Analysis
+
+Principal component analysis (PCA) is often employed to help summarize technical and biological precision in metabolomic studies where the number of metabolites are too great to summarize individually. In the absence of batch effects QC samples should be clustered tightly together as their variation should appear small compared tot he biological variation. However, in the presence of batch effects, the spread of the QC samples typically increases due to the higher technical variation. Setting "Color BY:" to "Class" will allow users to explore their data in this sense. Furthermore, "Color BY:" can be set to "Batch" to confirm if batch effects are a major source of variation in the data. When performing PCA it is highly recommended to autoscale data as variable weights will be strong impacted by their absolute values.
+
+```{r}
+
+inputPanel(
+  
+    selectInput(
+    inputId = "autoscaler",
+    label = "Autoscale Data:",
+    choices = c("TRUE", "FALSE"),
+    selected = "TRUE",
+    multiple = FALSE,
+    selectize = TRUE,
+    width = NULL,
+    size = NULL),
+    
+    selectInput(
+    inputId = "coloring_scheme_1",
+    label = "Color By:",
+    choices = c("Class", "Batch"),
+    selected = "Class",
+    multiple = FALSE,
+    selectize = TRUE,
+    width = NULL,
+    size = NULL),
+  
+    selectInput(
+    inputId = "sample_label_pca_1",
+    label = "Sample Labels:",
+    choices = c("TRUE", "FALSE"),
+    selected = "FALSE",
+    multiple = FALSE,
+    selectize = TRUE,
+    width = NULL,
+    size = NULL),
+  
+  sliderInput(
+    inputId = "point_size_pca_1", 
+    label = "Point Size:",
+    min = 1, 
+    max = 10,
+    value = 3),
+  
+    sliderInput(
+    inputId = "opacity_pca_1", 
+    label = "Opacity:",
+    min = 0, 
+    max = 1,
+    value = 0.5)
+
+)
+
+renderPlot({
+  
+  pca_data <- autoscaled_data()
+  
+  # convert class and batch to numeric for prcomp function
+  
+  pca_data$class <- ifelse(pca_data$class == "Sample", 1, 0)
+  pca_data$batch <- is.numeric(pca_data$batch)
+ 
+   # determine coloring scheme
+  
+  index <- ifelse(input$coloring_scheme_1 == "Class", 2, 3)
+  
+  # compute PCA
+  
+  pca_results <- prcomp(pca_data[, c(5:ncol(pca_data))], 
+                 center = FALSE,
+                 scale = FALSE)
+ 
+  scree.plot <- fviz_eig(pca_results)
+
+  pc1 <- scree.plot[["data"]][["eig"]][1] %>%
+    round(., 1)
+  pc2 <- scree.plot[["data"]][["eig"]][2] %>%
+    round(., 1)
+  
+  fviz_pca_ind(pca_results,
+             col.ind = data[, index],
+             addEllipses = TRUE, 
+             legend.title = colnames(data)[index],
+             label = "none",
+             repel = FALSE,
+             mean.point = FALSE,
+             pointsize = input$point_size_pca_1,
+             pointshape = 19,
+             alpha = input$opacity_pca_1) +
+  theme(text = element_text(size = 20, family = "sans"),
+        plot.title = element_blank(),
+        axis.text = element_text(colour="black", face = "plain", size = 20, family = "sans"),
+        axis.line = element_line(linewidth = 0.5, colour = "black", linetype = 1)) +
+  scale_y_continuous(name = paste("PC 2 (", pc2, "%)", sep = ""),
+                     breaks = scales::pretty_breaks(n = 10)) +
+  scale_x_continuous(name = paste("PC 1 (", pc1, "%)", sep = ""),
+                     breaks = scales::pretty_breaks(n = 10)) +
+  if (input$sample_label_pca_1 == TRUE){
+      geom_text(aes(label = data$pbm_id), vjust = -1)
+  }else{
+      geom_text(aes(label = ""), vjust = -1)
+  }
+
+  
+  
+})
+
+
+```
+
+---
+
+### Metabolite Control Charts
+
+The control charts below should be used to help identify inter- and intra- batch effects which may be correctable in the following section. Red hashed lines represent 95% confidence intervals while the black solid line represents the mean of the data.
+
+```{r qc, echo=FALSE}
+inputPanel(
+  
+  varSelectInput(
+  inputId = "cc_metabolite",
+  label = "Metabolite Selection:",
+  data = data[, 5:ncol(data)],
+  selected = NULL,
+  multiple = FALSE,
+  selectize = TRUE,
+  width = NULL,
+  size = NULL
+),
+
+selectInput(
+  inputId = "cc_class_filter", 
+  label = "Class Selection:", 
+  choices = c("Both", "QC", "Sample"), 
+  selected = "Sample"),
+
+sliderInput(inputId = "point_size", 
+            label = "Point Size:",
+            min = 1, 
+            max = 10,
+            value = 5)
+
+)
+
+# plot control chart
+
+renderPlot({
+  
+  # prepare data
+  
+  plot_data <- transformed_data()
+  
+  plot_data <- if (input$cc_class_filter != "Both") {
+    subset(plot_data, plot_data$class == input$cc_class_filter)
+  } else {
+    plot_data <- transformed_data()
+  }
+  
+  # Calculate metrics for control chart aesthetics
+  
+  mean_value <- mean(plot_data[[input$cc_metabolite]])
+  upper_limit <- mean(plot_data[[input$cc_metabolite]]) + 1.96 * sd(plot_data[[input$cc_metabolite]])
+  lower_limit <- mean(plot_data[[input$cc_metabolite]]) - 1.96 * sd(plot_data[[input$cc_metabolite]])
+  
+  ggplot(data = plot_data, aes(x = run_order, y = .data[[input$cc_metabolite]], color = batch)) +
+    geom_point(size = input$point_size) +
+    geom_hline(yintercept = mean_value, linetype = "solid", color = "black", size = 0.5) +
+    geom_hline(yintercept = upper_limit, linetype = "dashed", color = "red", size = 0.5) +
+    geom_hline(yintercept = lower_limit, linetype = "dashed", color = "red", size = 0.5) +
+    theme_classic() +
+    theme(text = element_text(size = 25),
+          axis.text = element_text(color="black"),
+          axis.ticks = element_line(color = "black")) +
+    scale_x_continuous(breaks = scales::breaks_pretty(), name = "Run Order") +
+    scale_y_continuous(breaks = scales::breaks_pretty(), name = "Response") +
+    labs(color = "Batch") +
+    ggtitle(paste(input$cc_metabolite, "Control Chart", sep = " "))
+  
+})
+```
+
+<hr style="border:1px solid black">
+
+<div align = "center">
+
+## Section 2: Batch Correction
+
+</div>
+
+<div align = "left">
+
+<hr style="border:1px solid black">
+
+### Batch Correction Algorithm Selection
+
+The following batch correction algorithms are supported for implementation:
+
+1. [Quality Control - Robust Spline Correction (QC-RSC)](https://link.springer.com/article/10.1007/s00216-013-6856-7): This algorithm has a user definable smoothing parameter (0 < p < 1), however, to help avoid overfitting, p can be set to 0. In this case, it will be automatically optimized using leave-one-out cross validation. The QC-RSC algorithm is built upon the [quality control - robust LOESS signal correction (QC-RLSC)](https://www.nature.com/articles/nprot.2011.335) algorithm.
+
+2. Quality Control - Median Normalization (QC-MN): This is a simple correction algorithm which simply normalizes each metabolite response to the median of the nearest (n) QC responses. For instance, if n is set to 3 then metabolite A in sample 1 will be normalized to the median response of metabolite A from QCs 1-3. Median is used to reduce the impact of outliers. A larger n should also reduce the impact of outliers but may include QCs less relective of the local batch effects. More information on this correction algorithm is provided by [Martens et al.](https://www.mdpi.com/2218-1989/13/5/665). 
+
+```{r}
+
+inputPanel(
+  
+  selectInput(
+  inputId = "batch_correction", 
+  label = "Batch Correction Algorithm:", 
+  choices = c("QC-RSC", "QC-MN"), 
+  selected = "QC-RSC"),
+  
+  sliderInput(inputId = "smoothing_parameter", 
+            label = "Smoothing Parameter (QC-RSC):",
+            min = 0, 
+            max = 1,
+            value = 0),
+  
+    sliderInput(inputId = "n_qc", 
+            label = "Number of QCs (QC-MN):",
+            min = 2, 
+            max = 10,
+            value = 3)
+  
+)
+
+```
+
+
+```{r}
+
+# Correction Algorithms 
+
+## 1. QC-RSC
+
+qcrsc_corrected <- reactive({
+  
+  df <- transformed_data()
+  
+  results_temp <- QCRSC(df = df[, 5:ncol(df)],
+                            order = df$run_order,
+                            batch = df$batch,
+                            classes = df$class,
+                            spar = input$smoothing_parameter,
+                            log = FALSE,
+                            minQC = 4,
+                            qc_label = "QC")
+  
+  results_temp <- t(results_temp)
+  
+  df[, 5:ncol(df)] <- results_temp
+  
+  return(df)
+  
+})
+
+## Median Normalization
+
+qcmn_corrected <- reactive({
+  
+  df <- transformed_data()
+  
+  # perform batch-wise
+  
+  for(b in 1:length((unique(df$batch)))){
+    
+    df_temp <- subset(df, df$batch == unique(df$batch)[b])
+    qc_df <- subset(df_temp, df_temp$class == "QC")
+    
+      for (i in 1:nrow(df_temp)){
+    
+    # find nearest QC indexes
+    qc_indexes <- sort(abs(qc_df$run_order - df_temp$run_order[i]))[1:input$n_qc] + df_temp$run_order[i]
+    qc_indexes <- which(qc_df$run_order %in% qc_indexes)
+    
+    # get metabolite medians
+    qc_medians <- apply(qc_df[qc_indexes, 5:ncol(qc_df)], 2, median)
+    
+    # normalize data to medians
+    df[which(df$pbm_id == df_temp$pbm_id[i]), 5:ncol(df)] <- df[which(df$pbm_id == df_temp$pbm_id[i]), 5:ncol(df)]  / qc_medians
+    
+  }
+  }
+
+  # adjust final scale
+  
+  df[, 5:ncol(df)] <- Map(`-`, df[, 5:ncol(df)], colMeans(df[, 5:ncol(df)]))
+  df[, 5:ncol(df)] <- Map(`+`, df[, 5:ncol(df)], colMeans(transformed_data()[, 5:ncol(df)]))
+
+  
+  return(df)
+  
+})
+
+```
+
+```{r}
+inputPanel(
+  
+  varSelectInput(
+  inputId = "cc_metabolite",
+  label = "Metabolite Selection:",
+  data = data[, 5:ncol(data)],
+  selected = NULL,
+  multiple = FALSE,
+  selectize = TRUE,
+  width = NULL,
+  size = NULL
+),
+
+selectInput(
+  inputId = "cc_class_filter", 
+  label = "Class Selection:", 
+  choices = c("Both", "QC", "Sample"), 
+  selected = "Sample"),
+
+sliderInput(inputId = "point_size", 
+            label = "Point Size:",
+            min = 1, 
+            max = 10,
+            value = 5)
+
+)
+
+# plot control chart
+
+renderPlot({
+  
+  # prepare data
+  
+  plot_data <- if (input$batch_correction == "QC-RSC"){
+    plot_data <- qcrsc_corrected()
+    
+  }else if(input$batch_correction == "QC-MN"){
+    plot_data <- qcmn_corrected()
+  }
+  
+  plot_data <- if (input$cc_class_filter != "Both") {
+    subset(plot_data, plot_data$class == input$cc_class_filter)
+  } else {
+    plot_data <- transformed_data()
+  }
+  
+  # Calculate metrics for control chart aesthetics
+  
+  mean_value <- mean(plot_data[[input$cc_metabolite]])
+  upper_limit <- mean(plot_data[[input$cc_metabolite]]) + 1.96 * sd(plot_data[[input$cc_metabolite]])
+  lower_limit <- mean(plot_data[[input$cc_metabolite]]) - 1.96 * sd(plot_data[[input$cc_metabolite]])
+  
+  ggplot(data = plot_data, aes(x = run_order, y = .data[[input$cc_metabolite]], color = batch)) +
+    geom_point(size = input$point_size) +
+    geom_hline(yintercept = mean_value, linetype = "solid", color = "black", size = 0.5) +
+    geom_hline(yintercept = upper_limit, linetype = "dashed", color = "red", size = 0.5) +
+    geom_hline(yintercept = lower_limit, linetype = "dashed", color = "red", size = 0.5) +
+    theme_classic() +
+    theme(text = element_text(size = 25),
+          axis.text = element_text(color="black"),
+          axis.ticks = element_line(color = "black")) +
+    scale_x_continuous(breaks = scales::breaks_pretty(), name = "Run Order") +
+    scale_y_continuous(breaks = scales::breaks_pretty(n = 8), name = "Response") +
+    labs(color = "Batch") +
+    ggtitle(paste(input$cc_metabolite, "Control Chart", sep = " "))
+  
+})
+```
+
+<hr style="border:1px solid black">
+
+<div align = "center">
+
+## Section 3: Data Transformations and Filtering
+
+</div>
 
 <div align = "left">
 
@@ -204,395 +663,5 @@ renderUI({
 
 
 ```
-
----
-
-### Table Summary
-
-The table below summarizes key statistics for each metabolite. The columns "Mean" and "Standard_Deviation" were calculated with sample data (QC data is omitted). Biological and technical precisions have units of percent. The intraclass correlation coefficient (ICC) was calculated with the following equation:
-
-$$
-\Large ICC = \frac{\sigma^2_{\text{Biological}}} {\sigma^2_{\text{Biological}} + \sigma^2_{\text{Technical}}}
-$$
-
-
-```{r}
-
-# initialize reactive elements
-
-table_summary_values <- reactiveValues(
-  bio_cv_median = NULL,
-  bio_cv_range = NULL,
-  tech_cv_median = NULL,
-  tech_cv_range = NULL
-)
-
-renderDataTable({
-  
-  # prepare data
-  
-  data <- transformed_data()
-  
-  sample_df <- data[which(data$class == "Sample"), 5:ncol(data)]
-  qc_df <- data[which(data$class == "QC"), 5:ncol(data)]
-  
-  # calculate cvs
-  
-  biological_cv <- apply(sample_df, 2, sd) / colMeans(sample_df) * 100
-  technical_cv <- apply(qc_df, 2, sd) / colMeans(qc_df) * 100
-  
-  # calculate reactive outputs for markdown text
-  
-  table_summary_values$bio_cv_median <- round(median(biological_cv), 2)
-  table_summary_values$bio_cv_range <- paste(round(min(biological_cv), 2), "-", round(max(biological_cv), 2), sep = " ")
-  table_summary_values$tech_cv_median <- round(median(technical_cv), 2)
-  table_summary_values$tech_cv_range <- paste(round(min(technical_cv), 2), "-", round(max(technical_cv), 2), sep = " ")
-  
-  # generate table summary
-
-  table_summary <- data.frame("Metabolite" = colnames(sample_df),
-                            "Mean" = colMeans(sample_df),
-                            "Standard_Deviation" = apply(sample_df, 2, sd),
-                            "Biological_CV" = biological_cv,
-                            "Technical_CV" = technical_cv,
-                            "ICC" = (apply(sample_df, 2, sd))^2 / ((apply(sample_df, 2, sd))^2 + (apply(qc_df, 2, sd))^2))
-
-  table_summary[,2:ncol(table_summary)] <- round(table_summary[,2:ncol(table_summary)], digits = 2)
-  
-  return(table_summary)
-  
-})
-
-```
-
-```{r}
-
-renderText({
-  paste("In summary, the median technical CV is ", table_summary_values$tech_cv_median,  "% with a range of ", table_summary_values$tech_cv_range, "%. The median biological CV is ",table_summary_values$bio_cv_median,  "% with a range of ", table_summary_values$bio_cv_range, "%", sep = "")
-})
-
-```
-
----
-
-### PCA Comparing Technical and Biological Variation of Uncorrected Data
-
-```{r}
-
-inputPanel(
-  
-  checkboxInput(inputId = "autoscaler", 
-                label = "Autoscale Data", 
-                value = TRUE, 
-                width = NULL),
-  
-)
-
-renderPlot({
-  
-  # convert class to numeric for prcomp function
-
-  pca_data <- autoscaled_data()
-  pca_data$class <- ifelse(pca_data$class == "Sample", 1, 0)
-  
-  pca_results <- prcomp(pca_data[, c(2,5:ncol(pca_data))], 
-                 center = FALSE,
-                 scale = FALSE)
- 
- scree.plot <- fviz_eig(pca_results)
-
-pc1 <- scree.plot[["data"]][["eig"]][1] %>%
-  round(., 1)
-pc2 <- scree.plot[["data"]][["eig"]][2] %>%
-  round(., 1)
-  
-  fviz_pca_ind(pca_results,
-             col.ind = data$class,
-             palette = c("#FF5733", "#1ABC9C"),
-             addEllipses = TRUE, 
-             legend.title = "Groups",
-             label = "none",
-             repel = FALSE,
-             mean.point = FALSE,
-             pointsize = 3,
-             pointshape = 19,
-             alpha = 0.5) +
-  theme(text = element_text(size = 20, family = "sans"),
-        plot.title = element_blank(),
-        axis.text = element_text(colour="black", face = "plain", size = 20, family = "sans"),
-        axis.line = element_line(linewidth = 0.5, colour = "black", linetype = 1)) +
-  scale_y_continuous(name = paste("PC 2 (", pc2, "%)", sep = ""),
-                     breaks = scales::pretty_breaks(n = 10)) +
-  scale_x_continuous(name = paste("PC 1 (", pc1, "%)", sep = ""),
-                     breaks = scales::pretty_breaks(n = 10)) 
-  
-  
-})
-
-
-```
-
----
-
-### Metabolite Control Charts
-
-The control charts below should be used to help identify inter- and intra- batch effects which may be correctable in the following section. Red hashed lines represent 95% confidence intervals while the black solid line represents the mean of the data.
-
-```{r qc, echo=FALSE}
-inputPanel(
-  
-  varSelectInput(
-  inputId = "cc_metabolite",
-  label = "Metabolite Selection:",
-  data = data[, 5:ncol(data)],
-  selected = NULL,
-  multiple = FALSE,
-  selectize = TRUE,
-  width = NULL,
-  size = NULL
-),
-
-selectInput(
-  inputId = "cc_class_filter", 
-  label = "Class Selection:", 
-  choices = c("Both", "QC", "Sample"), 
-  selected = "Sample"),
-
-sliderInput(inputId = "point_size", 
-            label = "Point Size:",
-            min = 1, 
-            max = 10,
-            value = 5)
-
-)
-
-# plot control chart
-
-renderPlot({
-  
-  # prepare data
-  
-  plot_data <- transformed_data()
-  
-  plot_data <- if (input$cc_class_filter != "Both") {
-    subset(plot_data, plot_data$class == input$cc_class_filter)
-  } else {
-    plot_data <- transformed_data()
-  }
-  
-  # Calculate metrics for control chart aesthetics
-  
-  mean_value <- mean(plot_data[[input$cc_metabolite]])
-  upper_limit <- mean(plot_data[[input$cc_metabolite]]) + 1.96 * sd(plot_data[[input$cc_metabolite]])
-  lower_limit <- mean(plot_data[[input$cc_metabolite]]) - 1.96 * sd(plot_data[[input$cc_metabolite]])
-  
-  ggplot(data = plot_data, aes(x = run_order, y = .data[[input$cc_metabolite]], color = batch)) +
-    geom_point(size = input$point_size) +
-    geom_hline(yintercept = mean_value, linetype = "solid", color = "black", size = 0.5) +
-    geom_hline(yintercept = upper_limit, linetype = "dashed", color = "red", size = 0.5) +
-    geom_hline(yintercept = lower_limit, linetype = "dashed", color = "red", size = 0.5) +
-    theme_classic() +
-    theme(text = element_text(size = 25),
-          axis.text = element_text(color="black"),
-          axis.ticks = element_line(color = "black")) +
-    scale_x_continuous(breaks = scales::breaks_pretty(), name = "Run Order") +
-    scale_y_continuous(breaks = scales::breaks_pretty(), name = "Response") +
-    labs(color = "Batch") +
-    ggtitle(paste(input$cc_metabolite, "Control Chart", sep = " "))
-  
-})
-```
-
-<hr style="border:1px solid black">
-
-<div align = "center">
-
-## Section 2: Batch Correction
-
-</div>
-
-<div align = "left">
-
-<hr style="border:1px solid black">
-
-### Batch Correction Algorithm Selection
-
-The following batch correction algorithms are supported for implementation:
-
-1. [Quality Control - Robust Spline Correction (QC-RSC)](https://link.springer.com/article/10.1007/s00216-013-6856-7): This algorithm has a user definable smoothing parameter (0 < p < 1), however, to help avoid overfitting, p can be set to 0. In this case, it will be automatically optimized using leave-one-out cross validation. The QC-RSC algorithm is built upon the [quality control - robust LOESS signal correction (QC-RLSC)](https://www.nature.com/articles/nprot.2011.335) algorithm.
-
-2. Quality Control - Median Normalization (QC-MN): This is a simple correction algorithm which simply normalizes each metabolite response to the median of the nearest (n) QC responses. For instance, if n is set to 3 then metabolite A in sample 1 will be normalized to the median response of metabolite A from QCs 1-3. Median is used to reduce the impact of outliers. A larger n should also reduce the impact of outliers but may include QCs less relective of the local batch effects. More information on this correction algorithm is provided by [Martens et al.](https://www.mdpi.com/2218-1989/13/5/665). 
-
-```{r}
-
-inputPanel(
-  
-  selectInput(
-  inputId = "batch_correction", 
-  label = "Batch Correction Algorithm:", 
-  choices = c("QC-RSC", "QC-MN"), 
-  selected = "QC-RSC"),
-  
-  sliderInput(inputId = "smoothing_parameter", 
-            label = "Smoothing Parameter (QC-RSC):",
-            min = 0, 
-            max = 1,
-            value = 0),
-  
-    sliderInput(inputId = "n_qc", 
-            label = "Number of QCs (QC-MN):",
-            min = 1, 
-            max = 10,
-            value = 3)
-  
-)
-
-```
-
-
-```{r}
-
-# Correction Algorithms 
-
-## 1. QC-RSC
-
-qcrsc_corrected <- reactive({
-  
-  df <- transformed_data()
-  
-  results_temp <- QCRSC(df = df[, 5:ncol(df)],
-                            order = df$run_order,
-                            batch = df$batch,
-                            classes = df$class,
-                            spar = input$smoothing_parameter,
-                            log = FALSE,
-                            minQC = 4,
-                            qc_label = "QC")
-  
-  results_temp <- t(results_temp)
-  
-  df[, 5:ncol(df)] <- results_temp
-  
-  return(df)
-  
-})
-
-## Median Normalization
-
-qcmn_corrected <- reactive({
-  
-  df <- transformed_data()
-  
-  # perform batch-wise
-  
-  for(b in 1:length((unique(df$batch)))){
-    
-    df_temp <- subset(df, df$batch == unique(df$batch)[b])
-    qc_df <- subset(df_temp, df_temp$class == "QC")
-    
-      for (i in 1:nrow(df_temp)){
-    
-    # find nearest QC indexes
-    qc_indexes <- sort(abs(qc_df$run_order - df_temp$run_order[i]))[1:input$n_qc] + df_temp$run_order[i]
-    qc_indexes <- which(qc_df$run_order %in% qc_indexes)
-    
-    # get metabolite medians
-    qc_medians <- apply(qc_df[qc_indexes, 5:ncol(qc_df)], 2, median)
-    
-    # normalize data to medians
-    df[which(df$pbm_id == df_temp$pbm_id[i]), 5:ncol(df)] <- df[which(df$pbm_id == df_temp$pbm_id[i]), 5:ncol(df)]  / qc_medians
-    
-    print(df[which(df$pbm_id == df_temp$pbm_id[i]), 5:ncol(df)])
-    
-  }
-  }
-
-  return(df)
-  
-})
-
-```
-
-```{r}
-inputPanel(
-  
-  varSelectInput(
-  inputId = "cc_metabolite",
-  label = "Metabolite Selection:",
-  data = data[, 5:ncol(data)],
-  selected = NULL,
-  multiple = FALSE,
-  selectize = TRUE,
-  width = NULL,
-  size = NULL
-),
-
-selectInput(
-  inputId = "cc_class_filter", 
-  label = "Class Selection:", 
-  choices = c("Both", "QC", "Sample"), 
-  selected = "Sample"),
-
-sliderInput(inputId = "point_size", 
-            label = "Point Size:",
-            min = 1, 
-            max = 10,
-            value = 5)
-
-)
-
-# plot control chart
-
-renderPlot({
-  
-  # prepare data
-  
-  plot_data <- if (input$batch_correction == "QC-RSC"){
-    plot_data <- qcrsc_corrected()
-    
-  }else if(input$batch_correction == "QC-MN"){
-    plot_data <- qcmn_corrected()
-  }
-  
-  plot_data <- if (input$cc_class_filter != "Both") {
-    subset(plot_data, plot_data$class == input$cc_class_filter)
-  } else {
-    plot_data <- transformed_data()
-  }
-  
-  # Calculate metrics for control chart aesthetics
-  
-  mean_value <- mean(plot_data[[input$cc_metabolite]])
-  upper_limit <- mean(plot_data[[input$cc_metabolite]]) + 1.96 * sd(plot_data[[input$cc_metabolite]])
-  lower_limit <- mean(plot_data[[input$cc_metabolite]]) - 1.96 * sd(plot_data[[input$cc_metabolite]])
-  
-  ggplot(data = plot_data, aes(x = run_order, y = .data[[input$cc_metabolite]], color = batch)) +
-    geom_point(size = input$point_size) +
-    geom_hline(yintercept = mean_value, linetype = "solid", color = "black", size = 0.5) +
-    geom_hline(yintercept = upper_limit, linetype = "dashed", color = "red", size = 0.5) +
-    geom_hline(yintercept = lower_limit, linetype = "dashed", color = "red", size = 0.5) +
-    theme_classic() +
-    theme(text = element_text(size = 25),
-          axis.text = element_text(color="black"),
-          axis.ticks = element_line(color = "black")) +
-    scale_x_continuous(breaks = scales::breaks_pretty(), name = "Run Order") +
-    scale_y_continuous(breaks = scales::breaks_pretty(), name = "Response") +
-    labs(color = "Batch") +
-    ggtitle(paste(input$cc_metabolite, "Control Chart", sep = " "))
-  
-})
-```
-
-<hr style="border:1px solid black">
-
-<div align = "center">
-
-## Section 3: Export Results
-
-</div>
-
-<div align = "left">
-
-<hr style="border:1px solid black">
 
  - Signal normalization such as probabalisitc quotient normalization and total signal. Support in pmp
