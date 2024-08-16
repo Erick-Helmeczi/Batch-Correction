@@ -28,8 +28,8 @@ knitr::opts_chunk$set(echo = FALSE)
 ```
 
 ```{r, include = FALSE}
-# Load packages
 
+# Load packages
 if (!require("pacman", quietly = TRUE)) install.packages("pacman")
 if (!require("BiocManager", quietly = TRUE)) install.packages("BiocManager")
 
@@ -40,41 +40,43 @@ pacman::p_load("tidyverse", "stats", "rmarkdown", "factoextra", "pmp",
 
 ```{r}
 # Read and prepare data
+raw_data <- read.csv("study matrix.csv")
+raw_data$class <- as.factor(raw_data$class)
+raw_data$batch <- as.factor(raw_data$batch)
 
-data <- read.csv("study matrix.csv")
-data$class <- as.factor(data$class)
-data$batch <- as.factor(data$batch)
+data <- raw_data
 
 ```
 
 ```{r}
-# Reactive functions for section 1
 
-## Perform user selected transformation to all metabolites
+## Functions ===============================================================================================
 
-transformed_data <- reactive({
+# Transform Function (i.e. log-transform)
+
+transform_function <- function(input_data, transform){
   
-  temp_df <- data
+  temp_df <- input_data
   
-  if (input$transformer == "Log10") {
+  if (transform == "Log10") {
     temp_df[, 5:ncol(temp_df)] <- log(temp_df[, 5:ncol(temp_df)], base = 10)
-  } else if (input$transformer == "ln") {
+  } else if (transform == "ln") {
     temp_df[, 5:ncol(temp_df)] <- log(temp_df[, 5:ncol(temp_df)])
-  } else if (input$transformer == "Cube Root") {
+  } else if (transform == "Cube Root") {
     temp_df[, 5:ncol(temp_df)] <- (temp_df[, 5:ncol(temp_df)])^(1/3)
   }
   
   return(temp_df)
   
-})
+}
 
-## Autoscale data
+# Auto-Scale Function
 
-autoscaled_data <- reactive({
+autoscale_function <- function(input_data, autoscale){
   
-  temp_df <- transformed_data()
+  temp_df <- input_data
   
-  if(input$autoscaler == TRUE){
+  if(autoscale == TRUE){
     temp_df[, 5:ncol(temp_df)] <- scale(temp_df[, 5:ncol(temp_df)], center = TRUE, scale = TRUE)
   }else{
     temp_df
@@ -82,7 +84,316 @@ autoscaled_data <- reactive({
   
   return(temp_df)
   
+}
+
+```
+
+```{r}
+
+## Reactive Functions ==================================================================================
+
+# Correction Algorithm (QC-RSC)
+
+qcrsc_corrected <- reactive({
+  
+  df <- raw_data
+  
+  results_temp <- QCRSC(df = df[, 5:ncol(df)],
+                            order = df$run_order,
+                            batch = df$batch,
+                            classes = df$class,
+                            spar = input$smoothing_parameter,
+                            log = FALSE,
+                            minQC = 4,
+                            qc_label = "QC")
+  
+  results_temp <- t(results_temp)
+  
+  df[, 5:ncol(df)] <- results_temp
+  
+  return(df)
+  
 })
+
+# Correction Algorithm (QC-MN)
+
+qcmn_corrected <- reactive({
+  
+  df <- raw_data
+  
+  # perform batch-wise
+  
+  for(b in 1:length((unique(df$batch)))){
+    
+    df_temp <- subset(df, df$batch == unique(df$batch)[b])
+    qc_df <- subset(df_temp, df_temp$class == "QC")
+    
+      for (i in 1:nrow(df_temp)){
+    
+        # find nearest QC indexes
+        qc_indexes <- sort(abs(qc_df$run_order - df_temp$run_order[i]))[1:input$n_qc] + df_temp$run_order[i]
+        qc_indexes <- which(qc_df$run_order %in% qc_indexes)
+    
+        # get metabolite medians
+        qc_medians <- apply(qc_df[qc_indexes, 5:ncol(qc_df)], 2, median)
+    
+        # normalize data to medians
+        df[which(df$pbm_id == df_temp$pbm_id[i]), 5:ncol(df)] <- df[which(df$pbm_id == df_temp$pbm_id[i]), 5:ncol(df)]  / qc_medians
+    
+      }
+  }
+
+  # adjust final scale
+  df[, 5:ncol(df)] <- Map(`*`, df[, 5:ncol(df)], colMeans(data[, 5:ncol(data)]))
+  
+  return(df)
+  
+})
+
+
+```
+
+```{r}
+
+## Plots =======================================================================================================
+
+# Control Chart ------------------------------------------------------------------------------------------------
+
+create_control_chart <- function(data, transform_input, metabolite_input, class_filter_input, point_size_input, corrected_data) {
+  
+  # Prepare data
+  
+  plot_data <- data
+  
+  ## get batch corrected data
+  if (corrected_data == TRUE){
+    plot_data <- if (input$batch_correction == "QC-RSC") {
+    qcrsc_corrected()
+    } else if (input$batch_correction == "QC-MN") {
+    qcmn_corrected()
+    }
+  }
+  
+  # transform data
+  plot_data <- transform_function(input_data = plot_data, transform = transform_input)
+  
+  # filter data
+  plot_data <- if (class_filter_input != "Both") {
+    subset(plot_data, plot_data$class == class_filter_input)
+  } else {
+    plot_data
+  }
+  
+  # Calculate metrics for control chart aesthetics
+  mean_value <- mean(plot_data[[metabolite_input]])
+  upper_limit <- mean(plot_data[[metabolite_input]]) + 1.96 * sd(plot_data[[metabolite_input]])
+  lower_limit <- mean(plot_data[[metabolite_input]]) - 1.96 * sd(plot_data[[metabolite_input]])
+  
+  # Create the plot
+  ggplot(data = plot_data, aes(x = run_order, y = .data[[metabolite_input]], color = batch)) +
+    geom_point(size = point_size_input) +
+    geom_hline(yintercept = mean_value, linetype = "solid", color = "black", size = 0.5) +
+    geom_hline(yintercept = upper_limit, linetype = "dashed", color = "red", size = 0.5) +
+    geom_hline(yintercept = lower_limit, linetype = "dashed", color = "red", size = 0.5) +
+    theme_classic() +
+    theme(text = element_text(size = 25),
+          axis.text = element_text(color="black"),
+          axis.ticks = element_line(color = "black")) +
+    scale_x_continuous(breaks = scales::breaks_pretty(), name = "Run Order") +
+    scale_y_continuous(breaks = scales::breaks_pretty(n = 8), name = "Response") +
+    labs(color = "Batch") +
+    ggtitle(paste(metabolite_input, "Control Chart", sep = " "))
+}
+
+# PCA ----------------------------------------------------------------------------------------------------------
+
+create_PCA <- function(data, autoscale_input, transform_input, coloring_scheme_input, point_size_input, opacity_input, corrected_data) {
+  
+  plot_data <- data
+  
+  ## get batch corrected data
+  if (corrected_data == TRUE){
+    plot_data <- if (input$batch_correction == "QC-RSC") {
+    qcrsc_corrected()
+    } else if (input$batch_correction == "QC-MN") {
+    qcmn_corrected()
+    }
+  }
+  
+  # transform data
+  plot_data <- transform_function(input_data = plot_data, transform_input)
+  # Scale data
+  pca_data <- autoscale_function(input_data = plot_data, autoscale_input)
+  
+  # convert class and batch to numeric for prcomp function
+  pca_data$class <- ifelse(pca_data$class == "Sample", 1, 0)
+  pca_data$batch <- is.numeric(pca_data$batch)
+ 
+  # determine coloring scheme
+  index <- ifelse(coloring_scheme_input == "Class", 2, 3)
+  
+  # compute PCA
+  pca_results <- prcomp(pca_data[, c(5:ncol(pca_data))], 
+                 center = FALSE,
+                 scale = FALSE)
+ 
+  scree.plot <- fviz_eig(pca_results)
+
+  pc1 <- scree.plot[["data"]][["eig"]][1] %>%
+    round(., 1)
+  pc2 <- scree.plot[["data"]][["eig"]][2] %>%
+    round(., 1)
+  
+  # plot
+  fviz_pca_ind(pca_results,
+             col.ind = data[, index],
+             addEllipses = TRUE, 
+             legend.title = colnames(data)[index],
+             label = "none",
+             repel = FALSE,
+             mean.point = FALSE,
+             pointsize = point_size_input,
+             pointshape = 19,
+             alpha = opacity_input) +
+  theme(text = element_text(size = 20, family = "sans"),
+        plot.title = element_blank(),
+        axis.text = element_text(colour="black", face = "plain", size = 20, family = "sans"),
+        axis.line = element_line(linewidth = 0.5, colour = "black", linetype = 1)) +
+  scale_y_continuous(name = paste("PC 2 (", pc2, "%)", sep = ""),
+                     breaks = scales::pretty_breaks(n = 10)) +
+  scale_x_continuous(name = paste("PC 1 (", pc1, "%)", sep = ""),
+                     breaks = scales::pretty_breaks(n = 10)) +
+  if (input$sample_label_pca_1 == TRUE){
+      geom_text(aes(label = data$pbm_id), vjust = -1)
+  }else{
+      geom_text(aes(label = ""), vjust = -1)
+  }
+
+}
+
+# Histogram ---------------------------------------------------------------------------------------------
+
+create_histogram <- function (data, transform_input, metabolite_input, bin_input, class_filter_input, corrected_data){
+  
+  plot_data <- data
+  
+  # get batch corrected data
+  if (corrected_data == TRUE){
+    plot_data <- if (input$batch_correction == "QC-RSC") {
+    qcrsc_corrected()
+    } else if (input$batch_correction == "QC-MN") {
+    qcmn_corrected()
+    }
+  }
+  
+  # transform data
+  plot_data <- transform_function(input_data = plot_data, transform_input)
+  
+  # filter data
+  plot_data <- if (class_filter_input != "Both") {
+    subset(plot_data, plot_data$class == class_filter_input)
+  } else {
+    plot_data
+  }
+
+  # plot
+  ggplot(data = plot_data, aes(x = .data[[metabolite_input]])) +
+    geom_histogram(bins = bin_input, color = "white", alpha = 0.7, aes(fill = batch)) +
+    theme_classic() +
+    theme(text = element_text(size = 25),
+          axis.text = element_text(color="black"),
+          axis.ticks = element_line(color = "black")) +
+    scale_x_continuous(breaks = scales::breaks_pretty(), name = paste(input$metabolite, "Response", sep = " ")) +
+    scale_y_continuous(breaks = scales::breaks_pretty(), name = "Count") +
+    ggtitle(paste(input$metabolite, "Histogram", sep = " "))
+  
+}
+
+# Q-Q Plot ----------------------------------------------------------------------------------------------------------
+
+create_qq <- function (data, transform_input, metabolite_input, class_filter_input, corrected_data){
+  
+  plot_data <- data
+  
+  # get batch corrected data
+  if (corrected_data == TRUE){
+    plot_data <- if (input$batch_correction == "QC-RSC") {
+    qcrsc_corrected()
+    } else if (input$batch_correction == "QC-MN") {
+    qcmn_corrected()
+    }
+  }
+  
+  # transform data
+  plot_data <- transform_function(input_data = plot_data, transform_input)
+  
+  # filter data
+  plot_data <- if (class_filter_input != "Both") {
+    subset(plot_data, plot_data$class == class_filter_input)
+  } else {
+    plot_data
+  }
+
+  # plot
+  ggplot(data = plot_data, aes(sample = .data[[metabolite_input]])) +
+    stat_qq() +
+    stat_qq_line() +
+    theme_classic() + 
+    theme(text = element_text(size = 25),
+          axis.text = element_text(color="black"),
+          axis.ticks = element_line(color = "black")) +
+    scale_x_continuous(breaks = scales::breaks_pretty(), name = "Normal Theoretical Quantiles") +
+    scale_y_continuous(breaks = scales::breaks_pretty(), paste(metabolite_input, "Response", sep = " ")) +
+    ggtitle(paste(metabolite_input, "Q-Q Plot", sep = " "))
+  
+}
+
+## Tables ==================================================================================================
+
+create_table <- function (data, transform_input, corrected_data){
+  
+  table_data <- data
+  
+  # get batch corrected data
+  if (corrected_data == TRUE){
+    table_data <- if (input$batch_correction == "QC-RSC") {
+    qcrsc_corrected()
+    } else if (input$batch_correction == "QC-MN") {
+    qcmn_corrected()
+    }
+  }
+  
+  # transform data
+  table_data <- transform_function(input_data = table_data, transform_input)
+
+  # subset data
+  sample_df <- table_data[which(table_data$class == "Sample"), 5:ncol(table_data)]
+  qc_df <- table_data[which(table_data$class == "QC"), 5:ncol(table_data)]
+  
+  # calculate CVs
+  biological_cv <- apply(sample_df, 2, sd) / colMeans(sample_df) * 100
+  technical_cv <- apply(qc_df, 2, sd) / colMeans(qc_df) * 100
+  
+  # calculate reactive outputs for markdown text - section 1
+  table_summary_values$bio_cv_median <- round(median(biological_cv), 2)
+  table_summary_values$bio_cv_range <- paste(round(min(biological_cv), 2), "-", round(max(biological_cv), 2), sep = " ")
+  table_summary_values$tech_cv_median <- round(median(technical_cv), 2)
+  table_summary_values$tech_cv_range <- paste(round(min(technical_cv), 2), "-", round(max(technical_cv), 2), sep = " ")
+  
+  # generate table summary
+
+  table_summary <- data.frame("Metabolite" = colnames(sample_df),
+                            "Mean" = colMeans(sample_df),
+                            "Standard_Deviation" = apply(sample_df, 2, sd),
+                            "Biological_CV" = biological_cv,
+                            "Technical_CV" = technical_cv,
+                            "ICC" = (apply(sample_df, 2, sd))^2 / ((apply(sample_df, 2, sd))^2 + (apply(qc_df, 2, sd))^2))
+
+  table_summary[,2:ncol(table_summary)] <- round(table_summary[,2:ncol(table_summary)], digits = 2)
+ 
+   return(table_summary)
+   
+}
 
 ```
   
@@ -99,6 +410,29 @@ autoscaled_data <- reactive({
 <hr style="border:1px solid black">
 
 ---
+
+### Data Transformation
+
+Each sections provides users with an opportunity to select to a data transformation for the data, thus the transofrmation selected here will only e applied to section 1. However, only section 3 provides an more in depth analysis of the impact of the transformation on the normality of the resulting data. This is done so users can choose 
+
+```{r}
+
+inputPanel(
+  
+  selectInput(
+  inputId = "transformer_section_1",
+  label = "Data Transformer:",
+  choices = c("None", "Log10", "ln", "Cube Root"),
+  selected = "None",
+  multiple = FALSE,
+  selectize = TRUE,
+  width = NULL,
+  size = NULL)
+  
+  
+)
+
+```
 
 ### Table Summary
 
@@ -120,37 +454,11 @@ table_summary_values <- reactiveValues(
   tech_cv_range = NULL
 )
 
+# Input Table
+
 renderDataTable({
   
-  # prepare data
-  
-  sample_df <- data[which(data$class == "Sample"), 5:ncol(data)]
-  qc_df <- data[which(data$class == "QC"), 5:ncol(data)]
-  
-  # calculate cvs
-  
-  biological_cv <- apply(sample_df, 2, sd) / colMeans(sample_df) * 100
-  technical_cv <- apply(qc_df, 2, sd) / colMeans(qc_df) * 100
-  
-  # calculate reactive outputs for markdown text
-  
-  table_summary_values$bio_cv_median <- round(median(biological_cv), 2)
-  table_summary_values$bio_cv_range <- paste(round(min(biological_cv), 2), "-", round(max(biological_cv), 2), sep = " ")
-  table_summary_values$tech_cv_median <- round(median(technical_cv), 2)
-  table_summary_values$tech_cv_range <- paste(round(min(technical_cv), 2), "-", round(max(technical_cv), 2), sep = " ")
-  
-  # generate table summary
-
-  table_summary <- data.frame("Metabolite" = colnames(sample_df),
-                            "Mean" = colMeans(sample_df),
-                            "Standard_Deviation" = apply(sample_df, 2, sd),
-                            "Biological_CV" = biological_cv,
-                            "Technical_CV" = technical_cv,
-                            "ICC" = (apply(sample_df, 2, sd))^2 / ((apply(sample_df, 2, sd))^2 + (apply(qc_df, 2, sd))^2))
-
-  table_summary[,2:ncol(table_summary)] <- round(table_summary[,2:ncol(table_summary)], digits = 2)
-  
-  return(table_summary)
+create_table(data = raw_data, transform_input = input$transformer_section_1, corrected_data = FALSE)
   
 })
 
@@ -222,56 +530,8 @@ inputPanel(
 
 renderPlot({
   
-  pca_data <- autoscaled_data()
-  
-  # convert class and batch to numeric for prcomp function
-  
-  pca_data$class <- ifelse(pca_data$class == "Sample", 1, 0)
-  pca_data$batch <- is.numeric(pca_data$batch)
- 
-   # determine coloring scheme
-  
-  index <- ifelse(input$coloring_scheme_1 == "Class", 2, 3)
-  
-  # compute PCA
-  
-  pca_results <- prcomp(pca_data[, c(5:ncol(pca_data))], 
-                 center = FALSE,
-                 scale = FALSE)
- 
-  scree.plot <- fviz_eig(pca_results)
+  create_PCA(data = raw_data, autoscale_input = input$autoscaler, transform_input = input$transformer_section_1, coloring_scheme_input = input$coloring_scheme_1, point_size_input = input$point_size_pca_1, opacity_input = input$opacity_pca_1, corrected_data = FALSE)
 
-  pc1 <- scree.plot[["data"]][["eig"]][1] %>%
-    round(., 1)
-  pc2 <- scree.plot[["data"]][["eig"]][2] %>%
-    round(., 1)
-  
-  fviz_pca_ind(pca_results,
-             col.ind = data[, index],
-             addEllipses = TRUE, 
-             legend.title = colnames(data)[index],
-             label = "none",
-             repel = FALSE,
-             mean.point = FALSE,
-             pointsize = input$point_size_pca_1,
-             pointshape = 19,
-             alpha = input$opacity_pca_1) +
-  theme(text = element_text(size = 20, family = "sans"),
-        plot.title = element_blank(),
-        axis.text = element_text(colour="black", face = "plain", size = 20, family = "sans"),
-        axis.line = element_line(linewidth = 0.5, colour = "black", linetype = 1)) +
-  scale_y_continuous(name = paste("PC 2 (", pc2, "%)", sep = ""),
-                     breaks = scales::pretty_breaks(n = 10)) +
-  scale_x_continuous(name = paste("PC 1 (", pc1, "%)", sep = ""),
-                     breaks = scales::pretty_breaks(n = 10)) +
-  if (input$sample_label_pca_1 == TRUE){
-      geom_text(aes(label = data$pbm_id), vjust = -1)
-  }else{
-      geom_text(aes(label = ""), vjust = -1)
-  }
-
-  
-  
 })
 
 
@@ -303,7 +563,7 @@ selectInput(
   choices = c("Both", "QC", "Sample"), 
   selected = "Sample"),
 
-sliderInput(inputId = "point_size", 
+sliderInput(inputId = "cc_point_size", 
             label = "Point Size:",
             min = 1, 
             max = 10,
@@ -315,37 +575,11 @@ sliderInput(inputId = "point_size",
 
 renderPlot({
   
-  # prepare data
-  
-  plot_data <- transformed_data()
-  
-  plot_data <- if (input$cc_class_filter != "Both") {
-    subset(plot_data, plot_data$class == input$cc_class_filter)
-  } else {
-    plot_data <- transformed_data()
-  }
-  
-  # Calculate metrics for control chart aesthetics
-  
-  mean_value <- mean(plot_data[[input$cc_metabolite]])
-  upper_limit <- mean(plot_data[[input$cc_metabolite]]) + 1.96 * sd(plot_data[[input$cc_metabolite]])
-  lower_limit <- mean(plot_data[[input$cc_metabolite]]) - 1.96 * sd(plot_data[[input$cc_metabolite]])
-  
-  ggplot(data = plot_data, aes(x = run_order, y = .data[[input$cc_metabolite]], color = batch)) +
-    geom_point(size = input$point_size) +
-    geom_hline(yintercept = mean_value, linetype = "solid", color = "black", size = 0.5) +
-    geom_hline(yintercept = upper_limit, linetype = "dashed", color = "red", size = 0.5) +
-    geom_hline(yintercept = lower_limit, linetype = "dashed", color = "red", size = 0.5) +
-    theme_classic() +
-    theme(text = element_text(size = 25),
-          axis.text = element_text(color="black"),
-          axis.ticks = element_line(color = "black")) +
-    scale_x_continuous(breaks = scales::breaks_pretty(), name = "Run Order") +
-    scale_y_continuous(breaks = scales::breaks_pretty(), name = "Response") +
-    labs(color = "Batch") +
-    ggtitle(paste(input$cc_metabolite, "Control Chart", sep = " "))
+  create_control_chart(data = raw_data, metabolite_input = input$cc_metabolite, class_filter_input = input$cc_class_filter, point_size_input = input$cc_point_size, transform_input = input$transformer_section_1, corrected_data = FALSE)
   
 })
+
+
 ```
 
 <hr style="border:1px solid black">
@@ -368,6 +602,8 @@ The following batch correction algorithms are supported for implementation:
 
 2. Quality Control - Median Normalization (QC-MN): This is a simple correction algorithm which simply normalizes each metabolite response to the median of the nearest (n) QC responses. For instance, if n is set to 3 then metabolite A in sample 1 will be normalized to the median response of metabolite A from QCs 1-3. Median is used to reduce the impact of outliers. A larger n should also reduce the impact of outliers but may include QCs less relective of the local batch effects. More information on this correction algorithm is provided by [Martens et al.](https://www.mdpi.com/2218-1989/13/5/665). 
 
+The selected data transformation is applied following batch correction to all of section 2.
+
 ```{r}
 
 inputPanel(
@@ -384,89 +620,117 @@ inputPanel(
             max = 1,
             value = 0),
   
-    sliderInput(inputId = "n_qc", 
-            label = "Number of QCs (QC-MN):",
-            min = 2, 
-            max = 10,
-            value = 3)
+  sliderInput(inputId = "n_qc", 
+           label = "Number of QCs (QC-MN):",
+           min = 2, 
+           max = 10,
+           value = 3),
+  
+  selectInput(
+  inputId = "transformer_section_2",
+  label = "Data Transformer:",
+  choices = c("None", "Log10", "ln", "Cube Root"),
+  selected = "None",
+  multiple = FALSE,
+  selectize = TRUE,
+  width = NULL,
+  size = NULL)
   
 )
 
 ```
 
+### Post-Correction Table Summary
 
 ```{r}
+# initialize reactive elements
 
-# Correction Algorithms 
+table_summary_values <- reactiveValues(
+  bio_cv_median = NULL,
+  bio_cv_range = NULL,
+  tech_cv_median = NULL,
+  tech_cv_range = NULL
+)
 
-## 1. QC-RSC
+# Input Table
 
-qcrsc_corrected <- reactive({
+renderDataTable({
   
-  df <- transformed_data()
-  
-  results_temp <- QCRSC(df = df[, 5:ncol(df)],
-                            order = df$run_order,
-                            batch = df$batch,
-                            classes = df$class,
-                            spar = input$smoothing_parameter,
-                            log = FALSE,
-                            minQC = 4,
-                            qc_label = "QC")
-  
-  results_temp <- t(results_temp)
-  
-  df[, 5:ncol(df)] <- results_temp
-  
-  return(df)
-  
-})
-
-## Median Normalization
-
-qcmn_corrected <- reactive({
-  
-  df <- transformed_data()
-  
-  # perform batch-wise
-  
-  for(b in 1:length((unique(df$batch)))){
-    
-    df_temp <- subset(df, df$batch == unique(df$batch)[b])
-    qc_df <- subset(df_temp, df_temp$class == "QC")
-    
-      for (i in 1:nrow(df_temp)){
-    
-    # find nearest QC indexes
-    qc_indexes <- sort(abs(qc_df$run_order - df_temp$run_order[i]))[1:input$n_qc] + df_temp$run_order[i]
-    qc_indexes <- which(qc_df$run_order %in% qc_indexes)
-    
-    # get metabolite medians
-    qc_medians <- apply(qc_df[qc_indexes, 5:ncol(qc_df)], 2, median)
-    
-    # normalize data to medians
-    df[which(df$pbm_id == df_temp$pbm_id[i]), 5:ncol(df)] <- df[which(df$pbm_id == df_temp$pbm_id[i]), 5:ncol(df)]  / qc_medians
-    
-  }
-  }
-
-  # adjust final scale
-  
-  df[, 5:ncol(df)] <- Map(`-`, df[, 5:ncol(df)], colMeans(df[, 5:ncol(df)]))
-  df[, 5:ncol(df)] <- Map(`+`, df[, 5:ncol(df)], colMeans(transformed_data()[, 5:ncol(df)]))
-
-  
-  return(df)
+create_table(data = raw_data, transform_input = input$transformer_section_2, corrected_data = FALSE)
   
 })
 
 ```
 
+
+### Post-Correction PCA
+
+```{r}
+
+inputPanel(
+  
+    selectInput(
+    inputId = "autoscaler_2",
+    label = "Autoscale Data:",
+    choices = c("TRUE", "FALSE"),
+    selected = "TRUE",
+    multiple = FALSE,
+    selectize = TRUE,
+    width = NULL,
+    size = NULL),
+    
+    selectInput(
+    inputId = "coloring_scheme_2",
+    label = "Color By:",
+    choices = c("Class", "Batch"),
+    selected = "Class",
+    multiple = FALSE,
+    selectize = TRUE,
+    width = NULL,
+    size = NULL),
+  
+    selectInput(
+    inputId = "sample_label_pca_2",
+    label = "Sample Labels:",
+    choices = c("TRUE", "FALSE"),
+    selected = "FALSE",
+    multiple = FALSE,
+    selectize = TRUE,
+    width = NULL,
+    size = NULL),
+  
+  sliderInput(
+    inputId = "point_size_pca_2", 
+    label = "Point Size:",
+    min = 1, 
+    max = 10,
+    value = 3),
+  
+    sliderInput(
+    inputId = "opacity_pca_2", 
+    label = "Opacity:",
+    min = 0, 
+    max = 1,
+    value = 0.5)
+
+)
+
+renderPlot({
+  
+  create_PCA(data = raw_data, autoscale_input = input$autoscaler_2, coloring_scheme_input = input$coloring_scheme_2, point_size_input = input$point_size_pca_2, opacity_input = input$opacity_pca_2, transform_input = input$transformer_section_2, corrected_data = TRUE)
+
+})
+
+
+```
+
+### Post-Correction Control Charts
+
 ```{r}
 inputPanel(
   
   varSelectInput(
-  inputId = "cc_metabolite",
+  inputId = "cc2_metabolite",
   label = "Metabolite Selection:",
   data = data[, 5:ncol(data)],
   selected = NULL,
@@ -477,12 +741,12 @@ inputPanel(
 ),
 
 selectInput(
-  inputId = "cc_class_filter", 
+  inputId = "cc2_class_filter", 
   label = "Class Selection:", 
   choices = c("Both", "QC", "Sample"), 
   selected = "Sample"),
 
-sliderInput(inputId = "point_size", 
+sliderInput(inputId = "cc2_point_size", 
             label = "Point Size:",
             min = 1, 
             max = 10,
@@ -494,42 +758,10 @@ sliderInput(inputId = "point_size",
 
 renderPlot({
   
-  # prepare data
-  
-  plot_data <- if (input$batch_correction == "QC-RSC"){
-    plot_data <- qcrsc_corrected()
-    
-  }else if(input$batch_correction == "QC-MN"){
-    plot_data <- qcmn_corrected()
-  }
-  
-  plot_data <- if (input$cc_class_filter != "Both") {
-    subset(plot_data, plot_data$class == input$cc_class_filter)
-  } else {
-    plot_data <- transformed_data()
-  }
-  
-  # Calculate metrics for control chart aesthetics
-  
-  mean_value <- mean(plot_data[[input$cc_metabolite]])
-  upper_limit <- mean(plot_data[[input$cc_metabolite]]) + 1.96 * sd(plot_data[[input$cc_metabolite]])
-  lower_limit <- mean(plot_data[[input$cc_metabolite]]) - 1.96 * sd(plot_data[[input$cc_metabolite]])
-  
-  ggplot(data = plot_data, aes(x = run_order, y = .data[[input$cc_metabolite]], color = batch)) +
-    geom_point(size = input$point_size) +
-    geom_hline(yintercept = mean_value, linetype = "solid", color = "black", size = 0.5) +
-    geom_hline(yintercept = upper_limit, linetype = "dashed", color = "red", size = 0.5) +
-    geom_hline(yintercept = lower_limit, linetype = "dashed", color = "red", size = 0.5) +
-    theme_classic() +
-    theme(text = element_text(size = 25),
-          axis.text = element_text(color="black"),
-          axis.ticks = element_line(color = "black")) +
-    scale_x_continuous(breaks = scales::breaks_pretty(), name = "Run Order") +
-    scale_y_continuous(breaks = scales::breaks_pretty(n = 8), name = "Response") +
-    labs(color = "Batch") +
-    ggtitle(paste(input$cc_metabolite, "Control Chart", sep = " "))
+  create_control_chart(data = raw_data, metabolite_input = input$cc2_metabolite, class_filter_input = input$cc2_class_filter, point_size_input = input$cc2_point_size, transform_input = input$transformer_section_2, corrected_data = TRUE)
   
 })
+
 ```
 
 <hr style="border:1px solid black">
@@ -552,7 +784,7 @@ The data transformers available below will be applied throughout the entire repo
 inputPanel(
   
   selectInput(
-  inputId = "transformer",
+  inputId = "transformer_section_3",
   label = "Data Transformer",
   choices = c("None", "Log10", "ln", "Cube Root"),
   selected = "None",
@@ -573,7 +805,7 @@ This section explores the distribution of the raw data prior to any batch correc
 inputPanel(
   
   varSelectInput(
-  inputId = "metabolite",
+  inputId = "metabolite_h",
   label = "Metabolite Selection:",
   data = data[, 5:ncol(data)],
   selected = NULL,
@@ -583,14 +815,14 @@ inputPanel(
   size = NULL),
 
 selectInput(
-  inputId = "class_filter", 
+  inputId = "class_filter_h", 
   label = "Class Selection:", 
   choices = c("Both", "QC", "Sample"), 
   selected = "Sample"),
 
 numericInput(
-  inputId = "bins",
-  label = "Number of Bins:",
+  inputId = "bins_h",
+  label = "Number of Bins (Histogram):",
   value = 15,
   min = 0,
   max = NA,
@@ -603,53 +835,16 @@ numericInput(
 
 output$histogramPlot <- renderPlot({
   
-  # filter data
+  create_histogram(data = raw_data, transform_input = input$transformer_section_3, metabolite_input = input$metabolite_h, bin_input = input$bins_h, class_filter_input = input$class_filter_h, corrected_data = TRUE)
   
-  plot_data <- transformed_data()
-  
-  plot_data <-   if (input$class_filter != "Both") {
-    subset(plot_data, plot_data$class == input$class_filter)
-  } else {
-    plot_data
-  }
-  
-  # plot
-  
-  ggplot(data = plot_data, aes(x = .data[[input$metabolite]])) +
-    geom_histogram(bins = input$bins, color = "white", alpha = 0.7, aes(fill = batch)) +
-    theme_classic() +
-    theme(text = element_text(size = 25),
-          axis.text = element_text(color="black"),
-          axis.ticks = element_line(color = "black")) +
-    scale_x_continuous(breaks = scales::breaks_pretty(), name = paste(input$metabolite, "Response", sep = " ")) +
-    scale_y_continuous(breaks = scales::breaks_pretty(), name = "Count") +
-    ggtitle(paste(input$metabolite, "Histogram", sep = " "))
 })
 
 # Quantile-quantile plot
 
 output$qqPlot <- renderPlot({
   
-    # filter data
+  create_qq(data = raw_data, transform_input = input$transformer_section_3, metabolite_input = input$metabolite_h, class_filter_input = input$class_filter_h, corrected_data = TRUE)
   
-  plot_data <- transformed_data()
-  
-  plot_data <-   if (input$class_filter != "Both") {
-    subset(plot_data, plot_data$class == input$class_filter)
-  } else {
-    plot_data
-  }
-  
-  ggplot(data = plot_data, aes(sample = .data[[input$metabolite]])) +
-    stat_qq() +
-    stat_qq_line() +
-    theme_classic() + 
-    theme(text = element_text(size = 25),
-          axis.text = element_text(color="black"),
-          axis.ticks = element_line(color = "black")) +
-    scale_x_continuous(breaks = scales::breaks_pretty(), name = "Normal Theoretical Quantiles") +
-    scale_y_continuous(breaks = scales::breaks_pretty(), paste(input$metabolite, "Response", sep = " ")) +
-    ggtitle(paste(input$metabolite, "Q-Q Plot", sep = " "))
 })
 
 # Metabolite Histograms and Q-Q Plots
