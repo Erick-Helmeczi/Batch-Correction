@@ -1,5 +1,5 @@
 ---
-title: "Tools for Implementing and Inspecting Metabolomic Batch Corrections"
+title: "Tools for Inspecting Metabolomic Batch Effects and Implementing QC-Based Batch Corrections"
 author: "Erick Helmeczi"
 date: "`r Sys.Date()`"
 output: html_document
@@ -17,11 +17,11 @@ runtime: shiny
 
 <hr style="border:1px solid black">
 
-This interactive R Markdown document provides features summarized in three sections to help users select and apply batch corrections for metabolomic data. This includes: 
+This interactive R Markdown document provides tools and summaries to help students, researchers, and technicians identify batch effects in their metabolomic data sets, optimize appropriate batch correction algorithms, and export corrected matrices. These features are separated into the following three sections: 
 
-  1. A data summary prior to the application of any batch correction. This includes a table summary highlighting key statistics for each metabolite and a principal component analysis (PCA) to help compare study technical and biological variations. Furthermore, the inclusion of control charts help identify intra- and inter-batch effects.
-  2. Several batch correction algorithms are provided along with comparative figures and statistics to uncorrected results to help users quantify the effectiveness of the batch correction algorithms.
-  3. Lastly, an export function is available for the final batch corrected data set. Additionally, normalization transformers are provided as well as feature filters which can be set based on user criteria. The exported data is saved with a brief summary of the data transformations applied, along with any filters, to ensure traceability and repeatability of the final feature table. 
+  1. A data summary prior to the application of any batch correction. This includes a table summary highlighting key statistics for each metabolite and a principal component analysis (PCA) to help compare study technical and biological variations. Furthermore, the inclusion of control charts help identify intra- and inter-batch effects. The main purpose of this section is to help identify if batch corrections are necessary and to establish the baseline variation of the data which will hopefully be reducible in section 2.
+  2. Several batch correction algorithms are provided along with comparative figures and statistics to help users quantify the effectiveness of the batch correction algorithms. This includes many of the same tools in section 1 so direct comparisons can be made between pre- and post-corrected data.
+  3. Lastly, an export function is available for the final batch corrected data set. Additionally, normalization transformers and feature filters are provided which can be set based on user criteria. The exported data is saved with a brief summary of the data transformations applied, along with any filters, to ensure traceability and repeatability of the final feature table. 
 
 ```{r setup, include = FALSE}
 knitr::opts_chunk$set(echo = FALSE)
@@ -43,8 +43,6 @@ pacman::p_load("tidyverse", "stats", "rmarkdown", "factoextra", "pmp",
 raw_data <- read.csv("study matrix.csv")
 raw_data$class <- as.factor(raw_data$class)
 raw_data$batch <- as.factor(raw_data$batch)
-
-data <- raw_data
 
 ```
 
@@ -144,7 +142,7 @@ qcmn_corrected <- reactive({
   }
 
   # adjust final scale
-  df[, 5:ncol(df)] <- Map(`*`, df[, 5:ncol(df)], colMeans(data[, 5:ncol(data)]))
+  df[, 5:ncol(df)] <- Map(`*`, df[, 5:ncol(df)], colMeans(raw_data[, 5:ncol(raw_data)]))
   
   return(df)
   
@@ -207,7 +205,7 @@ create_control_chart <- function(data, transform_input, metabolite_input, class_
 
 # PCA ----------------------------------------------------------------------------------------------------------
 
-create_PCA <- function(data, autoscale_input, transform_input, coloring_scheme_input, point_size_input, opacity_input, corrected_data) {
+create_PCA <- function(data, autoscale_input, transform_input, coloring_scheme_input, point_size_input, opacity_input, sample_label_input, corrected_data) {
   
   plot_data <- data
   
@@ -263,7 +261,7 @@ create_PCA <- function(data, autoscale_input, transform_input, coloring_scheme_i
                      breaks = scales::pretty_breaks(n = 10)) +
   scale_x_continuous(name = paste("PC 1 (", pc1, "%)", sep = ""),
                      breaks = scales::pretty_breaks(n = 10)) +
-  if (input$sample_label_pca_1 == TRUE){
+  if (sample_label_input == TRUE){
       geom_text(aes(label = data$pbm_id), vjust = -1)
   }else{
       geom_text(aes(label = ""), vjust = -1)
@@ -348,6 +346,76 @@ create_qq <- function (data, transform_input, metabolite_input, class_filter_inp
   
 }
 
+# Volcano Plot --------------------------------------------------------------------------------------------
+
+create_volcano <- function (data, transform_input, class_filter_input, point_size_input, opacity_input, sample_label_input){
+  
+  data_uncorrected <- data
+  data_corrected <- data
+  
+  # apply correction
+  data_corrected <- if (input$batch_correction == "QC-RSC") {
+  qcrsc_corrected()
+  } else if (input$batch_correction == "QC-MN") {
+  qcmn_corrected()
+  }
+  
+  # transform data
+  data_corrected <- transform_function(input_data = data_corrected, transform_input)
+  data_uncorrected <- transform_function(input_data = data_uncorrected, transform_input)
+  
+  # filter data
+  data_corrected <- if (class_filter_input != "Both") {
+    subset(data_corrected, data_corrected$class == class_filter_input)
+  } else {
+    data_corrected
+  }
+  
+  data_uncorrected <- if (class_filter_input != "Both") {
+  subset(data_uncorrected, data_uncorrected$class == class_filter_input)
+  } else {
+  data_uncorrected
+  }
+  
+  # compute cvs
+  corrected_cvs <- apply(data_corrected[, 5:ncol(data_corrected)], 2, sd) / colMeans(data_corrected[, 5:ncol(data_corrected)]) * 100
+  uncorrected_cvs <- apply(data_uncorrected[, 5:ncol(data_uncorrected)], 2, sd) / colMeans(data_uncorrected[, 5:ncol(data_corrected)]) * 100
+  
+  # summarize plotting data
+  plot_data <- data.frame("metabolite" = colnames(data[5:ncol(data)]),
+                          "cv_fold_change" = uncorrected_cvs / corrected_cvs,
+                          "cv" = corrected_cvs)
+  plot_data$group <- ifelse(plot_data$cv_fold_change < 1, 0, 1) %>%
+    as.factor()
+  
+  # Make a list to store outputs
+  volcano_list <- list()
+
+  # plot
+  p <- ggplot(data = plot_data, aes(x = cv_fold_change, y = cv, color = group)) +
+    geom_point(size = point_size_input, alpha = opacity_input) +
+    theme_classic() + 
+    scale_color_manual(values = c("#00BA38", "#F8766D")) +
+    theme(text = element_text(size = 25),
+          axis.text = element_text(color="black"),
+          axis.ticks = element_line(color = "black"),
+          legend.position = "none") +
+    scale_x_continuous(breaks = scales::breaks_pretty(n = 10), name = "CV Fold-Change", expand = c(0.2, 0.2)) +
+    scale_y_continuous(breaks = scales::breaks_pretty(n = 10), name = "Post-Correction CV (%)", expand = c(0.2, 0.2)) +
+  if (sample_label_input == TRUE){
+      geom_text(aes(label = plot_data$metabolite), vjust = -1, size = point_size_input)
+  }else{
+      geom_text(aes(label = ""), vjust = -1)
+  }
+  
+  volcano_list[[1]] <- p
+  
+  volcano_list[[2]] <- paste("Following batch correction the median CV fold-change was ", round(median(plot_data$cv_fold_change), digits = 2),"-fold with an IQR of ", round(quantile(plot_data$cv_fold_change)[2], digits  = 2), " to ", round(quantile(plot_data$cv_fold_change)[4], digits = 2), "-fold. ", "The new median CV is ", round(median(plot_data$cv), digits = 2), "% with an IQR of ", round(quantile(plot_data$cv)[2], digits = 2), "-", round(quantile(plot_data$cv)[4], digits = 2), "%.", sep = "")
+  
+  return(volcano_list)
+  
+}
+
 ## Tables ==================================================================================================
 
 create_table <- function (data, transform_input, corrected_data){
@@ -374,12 +442,6 @@ create_table <- function (data, transform_input, corrected_data){
   biological_cv <- apply(sample_df, 2, sd) / colMeans(sample_df) * 100
   technical_cv <- apply(qc_df, 2, sd) / colMeans(qc_df) * 100
   
-  # calculate reactive outputs for markdown text - section 1
-  table_summary_values$bio_cv_median <- round(median(biological_cv), 2)
-  table_summary_values$bio_cv_range <- paste(round(min(biological_cv), 2), "-", round(max(biological_cv), 2), sep = " ")
-  table_summary_values$tech_cv_median <- round(median(technical_cv), 2)
-  table_summary_values$tech_cv_range <- paste(round(min(technical_cv), 2), "-", round(max(technical_cv), 2), sep = " ")
-  
   # generate table summary
 
   table_summary <- data.frame("Metabolite" = colnames(sample_df),
@@ -391,8 +453,48 @@ create_table <- function (data, transform_input, corrected_data){
 
   table_summary[,2:ncol(table_summary)] <- round(table_summary[,2:ncol(table_summary)], digits = 2)
  
-   return(table_summary)
+  table_list <- list()
+  
+  table_list[[1]] <- table_summary
+
+  statement <- paste("In summary, the median technical CV is ", round(median(table_summary$Technical_CV), digits = 2), "% with a range of ", round(range(table_summary$Technical_CV), digits = 2)[1], " - " , round(range(table_summary$Technical_CV), digits = 2)[2], "%. The median biological CV is ", round(median(table_summary$Biological_CV), digits = 2),  "% with a range of ", round(range(table_summary$Biological_CV), digits = 2)[1], " - " , round(range(table_summary$Biological_CV), digits = 2)[2], "%", sep = "")
+  
+  table_list <- append(table_list, statement)
+  
+  return(table_list)
    
+}
+
+### Filtering ============================================================================================
+
+filter_function <- function(data, transform_input, corrected_data, qc_cv_threshold, icc_threshold){
+  
+  filtered_data <- data
+  
+  # get batch corrected data
+  if (corrected_data == TRUE){
+    filtered_data <- if (input$batch_correction == "QC-RSC") {
+    qcrsc_corrected()
+    } else if (input$batch_correction == "QC-MN") {
+    qcmn_corrected()
+    }
+  }
+  
+  # transform data
+  filtered_data <- transform_function(input_data = filtered_data, transform_input)
+
+  # subset data
+  sample_df <- filtered_data[which(filtered_data$class == "Sample"), 5:ncol(filtered_data)]
+  qc_df <- filtered_data[which(filtered_data$class == "QC"), 5:ncol(filtered_data)]
+  
+  # calculate technical CV
+  technical_cv <- apply(qc_df, 2, sd) / colMeans(qc_df) * 100
+  
+  # Calculate ICC
+  icc <- (apply(sample_df, 2, sd))^2 / ((apply(sample_df, 2, sd))^2 + (apply(qc_df, 2, sd))^2)
+  
+  print(colnames(qc_df)[technical_cv > qc_cv_threshold])
+  
 }
 
 ```
@@ -413,7 +515,7 @@ create_table <- function (data, transform_input, corrected_data){
 
 ### Data Transformation
 
-Each sections provides users with an opportunity to select to a data transformation for the data, thus the transofrmation selected here will only e applied to section 1. However, only section 3 provides an more in depth analysis of the impact of the transformation on the normality of the resulting data. This is done so users can choose 
+Each section provides users with an opportunity to select a data transformation, thus the transformation selected here will only be applied to section 1. Section 3 provides an more in depth analysis the transformation has on the distribution of each metabolite. This is provided so an appropriate transformation, which aligns with the requirements/assumptions of statistical analyses required by users, can be selected. 
 
 ```{r}
 
@@ -445,30 +547,21 @@ $$
 
 ```{r}
 
-# initialize reactive elements
-
-table_summary_values <- reactiveValues(
-  bio_cv_median = NULL,
-  bio_cv_range = NULL,
-  tech_cv_median = NULL,
-  tech_cv_range = NULL
-)
-
 # Input Table
 
 renderDataTable({
   
-create_table(data = raw_data, transform_input = input$transformer_section_1, corrected_data = FALSE)
+create_table(data = raw_data, transform_input = input$transformer_section_1, corrected_data = FALSE)[[1]]
   
 })
 
-```
-
-```{r}
 
 renderText({
-  paste("In summary, the median technical CV is ", table_summary_values$tech_cv_median,  "% with a range of ", table_summary_values$tech_cv_range, "%. The median biological CV is ",table_summary_values$bio_cv_median,  "% with a range of ", table_summary_values$bio_cv_range, "%", sep = "")
+  
+  create_table(data = raw_data, transform_input = input$transformer_section_1, corrected_data = FALSE)[[2]][1]
+  
 })
+
 
 ```
 
@@ -530,7 +623,7 @@ inputPanel(
 
 renderPlot({
   
-  create_PCA(data = raw_data, autoscale_input = input$autoscaler, transform_input = input$transformer_section_1, coloring_scheme_input = input$coloring_scheme_1, point_size_input = input$point_size_pca_1, opacity_input = input$opacity_pca_1, corrected_data = FALSE)
+  create_PCA(data = raw_data, autoscale_input = input$autoscaler, transform_input = input$transformer_section_1, coloring_scheme_input = input$coloring_scheme_1, point_size_input = input$point_size_pca_1, opacity_input = input$opacity_pca_1, sample_label_input = input$sample_label_pca_1, corrected_data = FALSE)
 
 })
 
@@ -549,7 +642,7 @@ inputPanel(
   varSelectInput(
   inputId = "cc_metabolite",
   label = "Metabolite Selection:",
-  data = data[, 5:ncol(data)],
+  data = raw_data[, 5:ncol(raw_data)],
   selected = NULL,
   multiple = FALSE,
   selectize = TRUE,
@@ -640,6 +733,59 @@ inputPanel(
 
 ```
 
+### Impact of Correction on Tecnnical and Biological Precison 
+
+```{r}
+
+inputPanel(
+  
+    selectInput(
+    inputId = "volcano_class_filter", 
+    label = "Class Selection:", 
+    choices = c("Both", "QC", "Sample"), 
+    selected = "Sample"),
+
+    sliderInput(
+    inputId = "point_size_volcano", 
+    label = "Point Size:",
+    min = 1, 
+    max = 10,
+    value = 4),
+  
+    sliderInput(
+    inputId = "opacity_volcano", 
+    label = "Opacity:",
+    min = 0, 
+    max = 1,
+    value = 0.5),
+
+    selectInput(
+    inputId = "sample_label_volcano",
+    label = "Sample Labels:",
+    choices = c("TRUE", "FALSE"),
+    selected = "FALSE",
+    multiple = FALSE,
+    selectize = TRUE,
+    width = NULL,
+    size = NULL)
+
+)
+
+renderPlot({
+  
+create_volcano(data = raw_data, transform_input = input$transformer_section_2, class_filter_input = input$volcano_class_filter, point_size_input = input$point_size_volcano, opacity_input = input$opacity_volcano, sample_label_input = input$sample_label_volcano)[[1]]
+  
+})
+
+renderText({
+  
+create_volcano(data = raw_data, transform_input = input$transformer_section_2, class_filter_input = input$volcano_class_filter, point_size_input = input$point_size_volcano, opacity_input = input$opacity_volcano, sample_label_input = input$sample_label_volcano)[[2]]
+  
+})
+
+```
+
+
 ### Post-Correction Table Summary
 
 ```{r}
@@ -656,7 +802,13 @@ table_summary_values <- reactiveValues(
 
 renderDataTable({
   
-create_table(data = raw_data, transform_input = input$transformer_section_2, corrected_data = FALSE)
+create_table(data = raw_data, transform_input = input$transformer_section_2, corrected_data = FALSE)[[1]]
+  
+})
+
+renderText({
+  
+  create_table(data = raw_data, transform_input = input$transformer_section_2, corrected_data = FALSE)[[2]]
   
 })
 
@@ -717,7 +869,7 @@ inputPanel(
 
 renderPlot({
   
-  create_PCA(data = raw_data, autoscale_input = input$autoscaler_2, coloring_scheme_input = input$coloring_scheme_2, point_size_input = input$point_size_pca_2, opacity_input = input$opacity_pca_2, transform_input = input$transformer_section_2, corrected_data = TRUE)
+  create_PCA(data = raw_data, autoscale_input = input$autoscaler_2, coloring_scheme_input = input$coloring_scheme_2, point_size_input = input$point_size_pca_2, opacity_input = input$opacity_pca_2, transform_input = input$transformer_section_2, sample_label_input = input$sample_label_pca_2, corrected_data = TRUE)
 
 })
 
@@ -732,7 +884,7 @@ inputPanel(
   varSelectInput(
   inputId = "cc2_metabolite",
   label = "Metabolite Selection:",
-  data = data[, 5:ncol(data)],
+  data = raw_data[, 5:ncol(raw_data)],
   selected = NULL,
   multiple = FALSE,
   selectize = TRUE,
@@ -807,7 +959,7 @@ inputPanel(
   varSelectInput(
   inputId = "metabolite_h",
   label = "Metabolite Selection:",
-  data = data[, 5:ncol(data)],
+  data = raw_data[, 5:ncol(raw_data)],
   selected = NULL,
   multiple = FALSE,
   selectize = TRUE,
@@ -858,5 +1010,45 @@ renderUI({
 
 
 ```
+
+### Data Filtering
+
+Filter the final feature table using the following criteria:
+
+1. Technical Variation
+2. Intercorrelation Coefficient 
+
+```{r}
+inputPanel(
+  
+  numericInput(
+  inputId = "qc_cv_cutoff",
+  label = "Technical Precision Threshold",
+  value = 40,
+  min = 0,
+  max = NA,
+  step = 0.01,
+  width = NULL),
+  
+  numericInput(
+  inputId = "icc_cutoff",
+  label = "ICC Threshold",
+  value = 0.7,
+  min = 0,
+  max = 1,
+  step = 0.01,
+  width = NULL),
+  
+)
+
+renderText({
+  
+filter_function(data = raw_data, transform_input = input$transformer_section_3, corrected_data = TRUE, qc_cv_threshold = input$qc_cv_cutoff, icc_threshold = input$icc_cutoff)
+  
+})
+```
+
+
+### Export Final Data Matrix
 
  - Signal normalization such as probabalisitc quotient normalization and total signal. Support in pmp
