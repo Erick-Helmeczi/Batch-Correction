@@ -493,8 +493,63 @@ filter_function <- function(data, transform_input, corrected_data, qc_cv_thresho
   # Calculate ICC
   icc <- (apply(sample_df, 2, sd))^2 / ((apply(sample_df, 2, sd))^2 + (apply(qc_df, 2, sd))^2)
   
-  print(colnames(qc_df)[technical_cv > qc_cv_threshold])
+  #metabolite outside cv threshold
+  cv_metabolites <- colnames(qc_df)[which(technical_cv > qc_cv_threshold)]
   
+  #metabolite outside icc threshold
+  icc_metabolites <- colnames(qc_df)[which(icc < icc_threshold)]
+  
+  # save outputs to list
+  filtering_list <- list()
+  filtering_list[[1]] <- ifelse(length(cv_metabolites) == 0, "None", paste(cv_metabolites, collapse=', ' ))
+  filtering_list[[2]] <- ifelse(length(icc_metabolites) == 0, "None", paste(icc_metabolites, collapse=', ' ))
+  
+  return(filtering_list)
+}
+
+### Exporting ============================================================================================
+
+export_function <- function(data, transform_input, corrected_data, qc_cv_threshold, icc_threshold, csv_name){
+  
+  export_data <- data
+  
+  # get batch corrected data
+  if (corrected_data == TRUE){
+    export_data <- if (input$batch_correction == "QC-RSC") {
+    qcrsc_corrected()
+    } else if (input$batch_correction == "QC-MN") {
+    qcmn_corrected()
+    }
+  }
+  
+  # transform data
+  export_data <- transform_function(input_data = export_data, transform_input)
+
+  # subset data
+  sample_df <- export_data[which(export_data$class == "Sample"), 5:ncol(export_data)]
+  qc_df <- export_data[which(export_data$class == "QC"), 5:ncol(export_data)]
+  
+  # calculate technical CV
+  technical_cv <- apply(qc_df, 2, sd) / colMeans(qc_df) * 100
+  
+  # Calculate ICC
+  icc <- (apply(sample_df, 2, sd))^2 / ((apply(sample_df, 2, sd))^2 + (apply(qc_df, 2, sd))^2)
+  
+  #metabolite outside cv threshold
+  cv_metabolites <- colnames(qc_df)[which(technical_cv > qc_cv_threshold)]
+  
+  #metabolite outside icc threshold
+  icc_metabolites <- colnames(qc_df)[which(icc < icc_threshold)]
+  
+  # metabolites to remove
+  remove_met <- unique(c(cv_metabolites, icc_metabolites))
+  
+  #subset export data
+  export_data <- export_data[, !(colnames(export_data) %in% remove_met)]
+  
+  file_name <- paste(csv_name, ".csv", sep = "")
+  
+  write.csv(export_data, file = file_name, row.names = FALSE)
 }
 
 ```
@@ -679,7 +734,7 @@ renderPlot({
 
 <div align = "center">
 
-## Section 2: Batch Correction
+## Section 2: Batch Correction and Post-Correction Data Summaries
 
 </div>
 
@@ -733,7 +788,9 @@ inputPanel(
 
 ```
 
-### Impact of Correction on Tecnnical and Biological Precison 
+### Impact of Correction on Technical and Biological Precison 
+
+The following plot summarizes the improvment the batch-correction had on technical variation (select "QC" under "Class Selection") and biological variation (select "Sample" under "Class Selection"). The x-axis "CV-Fold Change" is a ratio of the uncorrected CV to the corrected CV. Thus a value greater than one indicates a reduction in variation. The y-axis "Post-Correction CV" indcates the variation following correction. The option to include labels can be used to help identify outliers following correction.
 
 ```{r}
 
@@ -743,7 +800,7 @@ inputPanel(
     inputId = "volcano_class_filter", 
     label = "Class Selection:", 
     choices = c("Both", "QC", "Sample"), 
-    selected = "Sample"),
+    selected = "QC"),
 
     sliderInput(
     inputId = "point_size_volcano", 
@@ -930,7 +987,7 @@ renderPlot({
 
 ### Distribution Transformation
 
-The data transformers available below will be applied throughout the entire report if selected. 
+The selected data transformation is applied to all of section 3.
 
 ```{r}
 inputPanel(
@@ -1011,19 +1068,21 @@ renderUI({
 
 ```
 
-### Data Filtering
+### Data Filtering and Export
 
 Filter the final feature table using the following criteria:
 
-1. Technical Variation
-2. Intercorrelation Coefficient 
+1. Technical Variation (%)
+2. Interclas correlation Coefficient 
+
+Provide a file name for a csv of the final data set. 
 
 ```{r}
 inputPanel(
   
   numericInput(
   inputId = "qc_cv_cutoff",
-  label = "Technical Precision Threshold",
+  label = "Technical Precision Threshold:",
   value = 40,
   min = 0,
   max = NA,
@@ -1032,23 +1091,43 @@ inputPanel(
   
   numericInput(
   inputId = "icc_cutoff",
-  label = "ICC Threshold",
+  label = "ICC Threshold:",
   value = 0.7,
   min = 0,
   max = 1,
   step = 0.01,
   width = NULL),
   
+  textInput(
+    inputId = "csv_name", 
+    label = "CSV Name:", 
+    value = "Corrected Data Matrix", 
+    width = NULL, 
+    placeholder = NULL)
+  
 )
 
 renderText({
+paste("Metabolites with a technical CV above ", input$qc_cv_cutoff, "%:", sep = "")
+})
+
+renderText({
+filter_function(data = raw_data, transform_input = input$transformer_section_3, corrected_data = TRUE, qc_cv_threshold = input$qc_cv_cutoff, icc_threshold = input$icc_cutoff)[[1]]
+})
+
+renderText({
+paste("Metabolites with an ICC below ", input$icc_cutoff, ":", sep = "")
+})
+
+renderText({
+filter_function(data = raw_data, transform_input = input$transformer_section_3, corrected_data = TRUE, qc_cv_threshold = input$qc_cv_cutoff, icc_threshold = input$icc_cutoff)[[2]]
+})
+
+reactive({
   
-filter_function(data = raw_data, transform_input = input$transformer_section_3, corrected_data = TRUE, qc_cv_threshold = input$qc_cv_cutoff, icc_threshold = input$icc_cutoff)
+export_function(data = raw_data, transform_input = input$transformer_section_3, corrected_data = TRUE, qc_cv_threshold = input$qc_cv_cutoff, icc_threshold = input$icc_cutoff, csv_name = input$csv_name)
   
 })
+
 ```
 
-
-### Export Final Data Matrix
-
- - Signal normalization such as probabalisitc quotient normalization and total signal. Support in pmp
