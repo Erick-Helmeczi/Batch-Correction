@@ -1,5 +1,7 @@
 # Batch-Correction
 
+This interactive R Markdown document provides tools and summaries to help students, researchers, and technicians identify batch effects in their metabolomic data sets, optimize appropriate batch correction algorithms, and export corrected matrices.
+
 ## Getting Started
 ### Data Format
 
