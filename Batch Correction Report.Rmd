@@ -21,7 +21,7 @@ This interactive R Markdown document provides tools and summaries to help studen
 
   1. A data summary prior to the application of any batch correction. This includes a table summary highlighting key statistics for each metabolite and a principal component analysis (PCA) to help compare study technical and biological variations. Furthermore, the inclusion of control charts help identify intra- and inter-batch effects. The main purpose of this section is to help identify if batch corrections are necessary and to establish the baseline variation of the data which will hopefully be reducible in section 2.
   2. Several batch correction algorithms are provided along with comparative figures and statistics to help users quantify the effectiveness of the batch correction algorithms. This includes many of the same tools in section 1 so direct comparisons can be made between pre- and post-corrected data.
-  3. Lastly, an export function is available for the final batch corrected data set. Additionally, normalization transformers and feature filters are provided which can be set based on user criteria. The exported data is saved with a brief summary of the data transformations applied, along with any filters, to ensure traceability and repeatability of the final feature table. 
+  3. Lastly, an export feature is available for the batch corrected data set. Normalization transformers and feature filters can also be applied to the data before export.
 
 ```{r setup, include = FALSE}
 knitr::opts_chunk$set(echo = FALSE)
@@ -570,7 +570,7 @@ export_function <- function(data, transform_input, corrected_data, qc_cv_thresho
 
 ### Data Transformation
 
-Each section provides users with an opportunity to select a data transformation, thus the transformation selected here will only be applied to section 1. Section 3 provides an more in depth analysis the transformation has on the distribution of each metabolite. This is provided so an appropriate transformation, which aligns with the requirements/assumptions of statistical analyses required by users, can be selected. 
+Each section provides users with an opportunity to select a data transformation which is only applied to that section (i.e. the transformation selected here will only be applied to section 1). Section 3 evaluates on the impact of the transformation on data distribution so an appropriate transformation can be selected before data export.
 
 ```{r}
 
@@ -624,7 +624,7 @@ renderText({
 
 ### Principal Component Analysis
 
-Principal component analysis (PCA) is often employed to help summarize technical and biological precision in metabolomic studies where the number of metabolites are too great to summarize individually. In the absence of batch effects QC samples should be clustered tightly together as their variation should appear small compared tot he biological variation. However, in the presence of batch effects, the spread of the QC samples typically increases due to the higher technical variation. Setting "Color BY:" to "Class" will allow users to explore their data in this sense. Furthermore, "Color BY:" can be set to "Batch" to confirm if batch effects are a major source of variation in the data. When performing PCA it is highly recommended to autoscale data as variable weights will be strong impacted by their absolute values.
+Principal component analysis (PCA) is often employed to help summarize technical and biological precision in metabolomic studies where the number of metabolites are too great to be summarized individually. In the absence of batch effects, QC samples should be clustered tightly together as their variation should appear small compared to the biological variation. However, in the presence of batch effects, the spread of the QC samples typically increases due to the higher technical variation. Setting "Color BY:" to "Class" will allow users to explore their data in this sense. However, "Color BY:" can also be set to "Batch" in which case points are colored by batch. Here, the presence of clusters with little overlap indicate batch effects are the main source of variation in the data. When performing PCA it is highly recommended to autoscale data as variable weights will be strongly impacted by their absolute values.
 
 ```{r}
 
@@ -748,7 +748,7 @@ The following batch correction algorithms are supported for implementation:
 
 1. [Quality Control - Robust Spline Correction (QC-RSC)](https://link.springer.com/article/10.1007/s00216-013-6856-7): This algorithm has a user definable smoothing parameter (0 < p < 1), however, to help avoid overfitting, p can be set to 0. In this case, it will be automatically optimized using leave-one-out cross validation. The QC-RSC algorithm is built upon the [quality control - robust LOESS signal correction (QC-RLSC)](https://www.nature.com/articles/nprot.2011.335) algorithm.
 
-2. Quality Control - Median Normalization (QC-MN): This is a simple correction algorithm which simply normalizes each metabolite response to the median of the nearest (n) QC responses. For instance, if n is set to 3 then metabolite A in sample 1 will be normalized to the median response of metabolite A from QCs 1-3. Median is used to reduce the impact of outliers. A larger n should also reduce the impact of outliers but may include QCs less relective of the local batch effects. More information on this correction algorithm is provided by [Martens et al.](https://www.mdpi.com/2218-1989/13/5/665). 
+2. Quality Control - Median Normalization (QC-MN): This is a simple correction algorithm which simply normalizes each metabolite response to the median of the nearest (n) QC responses. For instance, if n is set to 3 then metabolite A in sample 1 will be normalized to the median response of metabolite A from QCs 1-3. Median is used to reduce the impact of outliers. A larger n should also reduce the impact of outliers but may include QCs less reflective of the local batch effects. More information on this correction algorithm is provided by [Martens et al.](https://www.mdpi.com/2218-1989/13/5/665). 
 
 The selected data transformation is applied following batch correction to all of section 2.
 
@@ -790,7 +790,7 @@ inputPanel(
 
 ### Impact of Correction on Technical and Biological Precison 
 
-The following plot summarizes the improvment the batch-correction had on technical variation (select "QC" under "Class Selection") and biological variation (select "Sample" under "Class Selection"). The x-axis "CV-Fold Change" is a ratio of the uncorrected CV to the corrected CV. Thus a value greater than one indicates a reduction in variation. The y-axis "Post-Correction CV" indcates the variation following correction. The option to include labels can be used to help identify outliers following correction.
+The following plot summarizes the improvement the batch-correction had on technical variation (select "QC" under "Class Selection") and biological variation (select "Sample" under "Class Selection"). The x-axis "CV-Fold Change" is a ratio of the uncorrected CV to the corrected CV. Thus a value greater than one indicates a reduction in variation. The y-axis "Post-Correction CV" indicates the variation following correction. The option to include labels can be used to help identify outliers following correction.
 
 ```{r}
 
@@ -1008,7 +1008,7 @@ inputPanel(
 
 ### Metabolite Distribution Overview
 
-This section explores the distribution of the raw data prior to any batch correction. 
+This section explores the distribution of the data following batch correction. 
 
 ```{r}
 inputPanel(
@@ -1073,9 +1073,9 @@ renderUI({
 Filter the final feature table using the following criteria:
 
 1. Technical Variation (%)
-2. Interclas correlation Coefficient 
+2. Intraclass correlation Coefficient 
 
-Provide a file name for a csv of the final data set. 
+Provide a file name for a csv of the final data set. The data exports automatically.
 
 ```{r}
 inputPanel(
