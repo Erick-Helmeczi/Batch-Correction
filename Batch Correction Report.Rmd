@@ -859,13 +859,13 @@ table_summary_values <- reactiveValues(
 
 renderDataTable({
   
-create_table(data = raw_data, transform_input = input$transformer_section_2, corrected_data = FALSE)[[1]]
+create_table(data = raw_data, transform_input = input$transformer_section_2, corrected_data = TRUE)[[1]]
   
 })
 
 renderText({
   
-  create_table(data = raw_data, transform_input = input$transformer_section_2, corrected_data = FALSE)[[2]]
+  create_table(data = raw_data, transform_input = input$transformer_section_2, corrected_data = TRUE)[[2]]
   
 })
 
